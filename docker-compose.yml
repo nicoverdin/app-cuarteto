@@ -1,0 +1,23 @@
+services:
+  app:
+    build: .
+    container_name: cuarteto-app
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.cuartetolyra.rule=Host(`cuartetolyra.duckdns.org`)"
+      - "traefik.http.routers.cuartetolyra.entrypoints=https"
+      - "traefik.http.routers.cuartetolyra.tls=true"
+      - "traefik.http.routers.cuartetolyra.tls.certresolver=letsencrypt"
+      - "traefik.http.services.cuartetolyra.loadbalancer.server.port=3000"
+      - "traefik.docker.network=coolify"
+    networks:
+      - coolify
+
+networks:
+  coolify:
+    external: true

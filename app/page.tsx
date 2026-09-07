@@ -118,7 +118,7 @@ export default function Home() {
       <div className="sticky top-0 bg-[#F2F2F7]/90 backdrop-blur-md z-10 pt-12 pb-4 px-4 shadow-sm">
         <div className="max-w-md mx-auto">
           <h1 className="text-3xl font-extrabold text-gray-900 mb-4 tracking-tight">
-            Programa Largo
+            Programa Cuarteto
           </h1>
           <MainProgressBar counts={totalCounts} />
           <p className="text-xs text-gray-500 mt-2 font-medium uppercase tracking-wider text-center">
