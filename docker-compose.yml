@@ -1,23 +1,16 @@
 services:
   app:
-    build: .
-    container_name: cuarteto-app
-    restart: always
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: https://hakqlrnpkpslfihncmsw.supabase.co
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: sb_publishable_5UI6bQe3aFJ756hbyI8U3w_lnC8Z6kR
     ports:
       - "3000:3000"
     environment:
-      - NODE_ENV=production
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.cuartetolyra.rule=Host(`cuartetolyra.duckdns.org`)"
-      - "traefik.http.routers.cuartetolyra.entrypoints=https"
-      - "traefik.http.routers.cuartetolyra.tls=true"
-      - "traefik.http.routers.cuartetolyra.tls.certresolver=letsencrypt"
-      - "traefik.http.services.cuartetolyra.loadbalancer.server.port=3000"
-      - "traefik.docker.network=coolify"
-    networks:
-      - coolify
-
-networks:
-  coolify:
-    external: true
+      - NEXT_PUBLIC_SUPABASE_URL=https://hakqlrnpkpslfihncmsw.supabase.co
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=sb_publishable_5UI6bQe3aFJ756hbyI8U3w_lnC8Z6kR
+    restart: always
+~
+~
+~
