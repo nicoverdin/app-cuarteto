@@ -1,10 +1,12 @@
 "use client";
-import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from 'react';
-import { UserCheck, WifiOff } from 'lucide-react';
+import { useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore } from 'react';
+import { UserCheck, WifiOff, Sparkles } from 'lucide-react';
 import { RoutinePart, ColorState } from '../types';
 import RoutineSection from '../components/RoutineSection';
+import InstallHint from '../components/InstallHint';
 import { MainProgressBar, StatusLegend } from '../components/ProgressCharts';
 import { supabase, fetchRoutine } from '../lib/supabase';
+import { diffAgainst, getSeen, getServerSeen, markSeen, reloadSeenBaseline, subscribeSeen } from '../lib/changes';
 import { initialData, isValidRoutine, readCachedRoutine, writeCachedRoutine } from '../lib/routine';
 
 interface Toast {
@@ -39,6 +41,29 @@ export default function ClientPage({ initialRoutine }: { initialRoutine: Routine
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useServiceWorker();
+
+  // Novedades desde la última vez que la atleta usó la app (el entrenador no las necesita).
+  const seenRaw = useSyncExternalStore(subscribeSeen, getSeen, getServerSeen);
+  const changes = useMemo(() => (isAdmin ? {} : diffAgainst(seenRaw, routine)), [isAdmin, seenRaw, routine]);
+  const routineRef = useRef(routine);
+  useEffect(() => {
+    routineRef.current = routine;
+  }, [routine]);
+  useEffect(() => {
+    if (isAdmin) return;
+    // Al salir se guarda lo que se ha visto; al volver, la base de comparación se actualiza.
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') markSeen(routineRef.current);
+      else reloadSeenBaseline();
+    };
+    const onPageHide = () => markSeen(routineRef.current);
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', onPageHide);
+    };
+  }, [isAdmin]);
 
   const showToast = useCallback((t: Toast) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -197,6 +222,9 @@ export default function ClientPage({ initialRoutine }: { initialRoutine: Routine
     return acc;
   }, { red: 0, yellow: 0, green: 0, pink: 0 });
 
+  const totalCorrections = totalCounts.red + totalCounts.yellow + totalCounts.green + totalCounts.pink;
+  const allPink = totalCorrections > 0 && totalCounts.pink === totalCorrections;
+
   if (isLoading) {
     return (
       <div role="status" className="min-h-screen bg-page flex items-center justify-center text-ink-soft">
@@ -246,18 +274,27 @@ export default function ClientPage({ initialRoutine }: { initialRoutine: Routine
           <div className="mt-3">
             <StatusLegend />
           </div>
-          <p className="text-xs text-ink-soft mt-2 font-medium uppercase tracking-wider text-center">
-            Objetivo: Todo al rosa
-          </p>
+          {allPink ? (
+            <p className="mt-2 flex items-center justify-center gap-2 text-sm font-bold text-accent">
+              <Sparkles className="w-4 h-4 motion-safe:animate-pulse" aria-hidden="true" />
+              ¡Todo al rosa!
+            </p>
+          ) : (
+            <p className="text-xs text-ink-soft mt-2 font-medium uppercase tracking-wider text-center">
+              Objetivo: Todo al rosa
+            </p>
+          )}
         </div>
       </div>
 
       <div className="max-w-md mx-auto px-4 mt-6">
+        {!isAdmin && <InstallHint />}
         {routine.map(part => (
           <RoutineSection
             key={part.id}
             part={part}
             isAdmin={isAdmin}
+            changes={changes}
             onUpdateCorrection={updateCorrection}
             onAddCorrection={addCorrection}
             onDeleteCorrection={deleteCorrection}

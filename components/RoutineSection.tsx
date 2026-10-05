@@ -1,21 +1,23 @@
 "use client";
 import { useId, useState } from 'react';
-import { ChevronDown, Plus } from 'lucide-react';
+import { ChevronDown, Plus, Sparkles } from 'lucide-react';
 import { RoutinePart, ColorState } from '../types';
 import { MAX_CORRECTION_LENGTH } from '../lib/status';
+import { Change } from '../lib/changes';
 import CorrectionItem from './CorrectionItem';
 import { SectionDonut } from './ProgressCharts';
 
 interface Props {
   part: RoutinePart;
   isAdmin: boolean;
+  changes: Record<string, Change>;
   onUpdateCorrection: (partId: string, correctionId: string, status: ColorState) => void;
   onAddCorrection: (partId: string, text: string) => void;
   onDeleteCorrection: (partId: string, correctionId: string) => void;
   onMoveCorrection: (partId: string, correctionId: string, direction: -1 | 1) => void;
 }
 
-export default function RoutineSection({ part, isAdmin, onUpdateCorrection, onAddCorrection, onDeleteCorrection, onMoveCorrection }: Props) {
+export default function RoutineSection({ part, isAdmin, changes, onUpdateCorrection, onAddCorrection, onDeleteCorrection, onMoveCorrection }: Props) {
   const [isOpen, setIsOpen] = useState(false);
   const [newCorrectionText, setNewCorrectionText] = useState('');
   const panelId = useId();
@@ -27,6 +29,9 @@ export default function RoutineSection({ part, isAdmin, onUpdateCorrection, onAd
     green: part.corrections.filter(c => c.status === 'green').length,
     pink: part.corrections.filter(c => c.status === 'pink').length,
   };
+
+  const changeCount = part.corrections.filter(c => changes[c.id]).length;
+  const isComplete = part.corrections.length > 0 && counts.pink === part.corrections.length;
 
   const handleAdd = (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,8 +54,21 @@ export default function RoutineSection({ part, isAdmin, onUpdateCorrection, onAd
           <span className="flex items-center gap-2">
             <ChevronDown aria-hidden="true" className={`w-6 h-6 text-ink-muted transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`} />
             <span className="text-[20px] font-bold text-ink tracking-tight">{part.name}</span>
+            {changeCount > 0 && (
+              <span className="shrink-0 rounded-full bg-accent px-2 py-0.5 text-[11px] font-bold text-on-accent">
+                {changeCount === 1 ? '1 novedad' : `${changeCount} novedades`}
+              </span>
+            )}
           </span>
-          <SectionDonut counts={counts} />
+          <span className="flex items-center gap-2">
+            {isComplete && (
+              <>
+                <Sparkles className="w-5 h-5 text-accent motion-safe:animate-pulse" aria-hidden="true" />
+                <span className="sr-only">Parte completada</span>
+              </>
+            )}
+            <SectionDonut counts={counts} />
+          </span>
         </button>
       </h2>
 
@@ -67,6 +85,7 @@ export default function RoutineSection({ part, isAdmin, onUpdateCorrection, onAd
               key={corr.id}
               correction={corr}
               isAdmin={isAdmin}
+              change={changes[corr.id]}
               onUpdate={(status) => onUpdateCorrection(part.id, corr.id, status)}
               onDelete={() => onDeleteCorrection(part.id, corr.id)}
               onMove={(direction) => onMoveCorrection(part.id, corr.id, direction)}

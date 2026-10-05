@@ -2,6 +2,7 @@
 import { Trash2, X, Clock, Check, Heart, ChevronUp, ChevronDown } from 'lucide-react';
 import { Correction } from '../types';
 import { STATUS_INFO, STATUS_ORDER } from '../lib/status';
+import { Change } from '../lib/changes';
 
 const STATUS_ICON = { red: X, yellow: Clock, green: Check, pink: Heart };
 
@@ -13,13 +14,20 @@ interface Props {
   canMoveUp: boolean;
   canMoveDown: boolean;
   isAdmin: boolean;
+  change?: Change;
 }
 
-export default function CorrectionItem({ correction, onUpdate, onDelete, onMove, canMoveUp, canMoveDown, isAdmin }: Props) {
+export default function CorrectionItem({ correction, onUpdate, onDelete, onMove, canMoveUp, canMoveDown, isAdmin, change }: Props) {
   const info = STATUS_INFO[correction.status];
   const Icon = STATUS_ICON[correction.status];
 
   const nextStatus = STATUS_ORDER[(STATUS_ORDER.indexOf(correction.status) + 1) % STATUS_ORDER.length];
+
+  const chip = change && (
+    <span className="mr-2 shrink-0 rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-accent">
+      {change === 'new' ? 'Nuevo' : 'Actualizado'}
+    </span>
+  );
 
   const badge = (
     <span
@@ -40,11 +48,12 @@ export default function CorrectionItem({ correction, onUpdate, onDelete, onMove,
           className="flex-1 flex items-center justify-between py-2 pr-2 text-left rounded-xl transition-transform active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           <span className="text-ink font-medium text-[15px] leading-tight pr-4">{correction.text}</span>
-          {badge}
+          <span className="flex items-center">{chip}{badge}</span>
         </button>
       ) : (
         <div className="flex-1 flex items-center justify-between py-3 pr-2">
           <p className="text-ink font-medium text-[15px] leading-tight pr-4">{correction.text}</p>
+          {chip}
           <span role="img" aria-label={`Estado: ${info.label}`}>{badge}</span>
         </div>
       )}
