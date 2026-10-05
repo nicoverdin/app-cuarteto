@@ -6,6 +6,10 @@ import { RoutinePart, ColorState } from '../types';
 import RoutineSection from '../components/RoutineSection';
 import InstallHint from '../components/InstallHint';
 import LastUpdated from '../components/LastUpdated';
+import AthleteFilter from '../components/AthleteFilter';
+import TodayView from '../components/TodayView';
+import WeeklyProgress from '../components/WeeklyProgress';
+import { isFor, useAthlete } from '../lib/athletes';
 import { MainProgressBar, StatusLegend } from '../components/ProgressCharts';
 import { supabase, fetchRoutine } from '../lib/supabase';
 import { diffAgainst, getSeen, getServerSeen, markSeen, reloadSeenBaseline, subscribeSeen } from '../lib/changes';
@@ -46,6 +50,8 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
   const [isOffline, setIsOffline] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [toast, setToast] = useState<Toast | null>(null);
+  const [view, setView] = useState<'rutina' | 'hoy'>('rutina');
+  const athlete = useAthlete();
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useServiceWorker();
@@ -193,17 +199,44 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
   const mapPart = (partId: string, fn: (p: RoutinePart) => RoutinePart): Mutation =>
     routine => routine.map(part => (part.id === partId ? fn(part) : part));
 
-  const updateCorrection = (partId: string, correctionId: string, newStatus: ColorState) =>
+  const updateCorrection = (partId: string, correctionId: string, newStatus: ColorState) => {
+    const now = new Date().toISOString();
     applyChange(
       mapPart(partId, part => ({
         ...part,
-        corrections: part.corrections.map(c => (c.id === correctionId ? { ...c, status: newStatus } : c)),
+        corrections: part.corrections.map(c => {
+          if (c.id !== correctionId || c.status === newStatus) return c;
+          const { masteredAt: _previous, ...rest } = c;
+          void _previous;
+          return { ...rest, status: newStatus, statusAt: now, ...(newStatus === 'pink' ? { masteredAt: now } : {}) };
+        }),
       })),
       'Estado actualizado'
     );
+  };
 
-  const addCorrection = (partId: string, text: string) => {
-    const correction = { id: newCorrectionId(), text, status: 'red' as ColorState };
+  const assignCorrection = (partId: string, correctionId: string, who: string[]) =>
+    applyChange(
+      mapPart(partId, part => ({
+        ...part,
+        corrections: part.corrections.map(c => {
+          if (c.id !== correctionId) return c;
+          const { who: _previous, ...rest } = c;
+          void _previous;
+          return who.length ? { ...rest, who } : rest;
+        }),
+      })),
+      'Atletas actualizadas'
+    );
+
+  const addCorrection = (partId: string, text: string, who: string[]) => {
+    const correction = {
+      id: newCorrectionId(),
+      text,
+      status: 'red' as ColorState,
+      statusAt: new Date().toISOString(),
+      ...(who.length ? { who } : {}),
+    };
     applyChange(
       mapPart(partId, part => ({ ...part, corrections: [...part.corrections, correction] })),
       'Corrección añadida'
@@ -231,7 +264,7 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
     );
 
   const totalCounts = routine.reduce((acc, part) => {
-    part.corrections.forEach(c => acc[c.status]++);
+    part.corrections.filter(c => isAdmin || isFor(c, athlete)).forEach(c => acc[c.status]++);
     return acc;
   }, { red: 0, yellow: 0, green: 0, pink: 0 });
 
@@ -310,18 +343,52 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
           Consultar el reglamento
         </Link>
         {!isAdmin && <InstallHint />}
+        {!isAdmin && <AthleteFilter athlete={athlete} />}
+        <div role="tablist" aria-label="Vista" className="mb-5 grid grid-cols-2 gap-1 rounded-2xl bg-track p-1">
+          {([['rutina', 'Rutina'], ['hoy', 'Para trabajar']] as const).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              role="tab"
+              aria-selected={view === key}
+              onClick={() => setView(key)}
+              className={`rounded-xl py-2 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-accent ${
+                view === key ? 'bg-surface text-ink shadow-sm' : 'text-ink-soft'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {view === 'hoy' ? (
+          <TodayView
+            routine={routine}
+            isAdmin={isAdmin}
+            athlete={athlete}
+            changes={changes}
+            onUpdateCorrection={updateCorrection}
+            onDeleteCorrection={deleteCorrection}
+            onAssignCorrection={assignCorrection}
+          />
+        ) : (
+          <>
+            <WeeklyProgress routine={routine} />
         {routine.map(part => (
           <RoutineSection
             key={part.id}
             part={part}
             isAdmin={isAdmin}
             changes={changes}
+            athlete={athlete}
+            onAssignCorrection={assignCorrection}
             onUpdateCorrection={updateCorrection}
             onAddCorrection={addCorrection}
             onDeleteCorrection={deleteCorrection}
             onMoveCorrection={moveCorrection}
           />
         ))}
+          </>
+        )}
       </div>
 
       <div aria-live="polite" role="status" className="fixed bottom-4 inset-x-0 flex justify-center px-4 pointer-events-none">

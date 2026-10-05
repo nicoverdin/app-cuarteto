@@ -1,8 +1,11 @@
 "use client";
-import { Trash2, X, Clock, Check, Heart, ChevronUp, ChevronDown } from 'lucide-react';
+import { useState } from 'react';
+import { Trash2, X, Clock, Check, Heart, ChevronUp, ChevronDown, Users } from 'lucide-react';
 import { Correction } from '../types';
 import { STATUS_INFO, STATUS_ORDER } from '../lib/status';
 import { Change } from '../lib/changes';
+import { agoLabel } from '../lib/history';
+import WhoPicker from './WhoPicker';
 
 const STATUS_ICON = { red: X, yellow: Clock, green: Check, pink: Heart };
 
@@ -11,17 +14,35 @@ interface Props {
   onUpdate: (newStatus: Correction['status']) => void;
   onDelete: () => void;
   onMove: (direction: -1 | 1) => void;
+  onAssign?: (who: string[]) => void;
+  hideReorder?: boolean;
   canMoveUp: boolean;
   canMoveDown: boolean;
   isAdmin: boolean;
   change?: Change;
 }
 
-export default function CorrectionItem({ correction, onUpdate, onDelete, onMove, canMoveUp, canMoveDown, isAdmin, change }: Props) {
+export default function CorrectionItem({ correction, onUpdate, onDelete, onMove, onAssign, hideReorder, canMoveUp, canMoveDown, isAdmin, change }: Props) {
+  const [assigning, setAssigning] = useState(false);
   const info = STATUS_INFO[correction.status];
   const Icon = STATUS_ICON[correction.status];
 
   const nextStatus = STATUS_ORDER[(STATUS_ORDER.indexOf(correction.status) + 1) % STATUS_ORDER.length];
+
+  const who = correction.who?.length ? correction.who : null;
+  const mastered = correction.status === 'pink' && correction.masteredAt ? agoLabel(correction.masteredAt) : null;
+  const meta = (who || mastered) && (
+    <span className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] font-medium text-ink-soft">
+      {who && <span>Para: {who.join(', ')}</span>}
+      {mastered && <span suppressHydrationWarning>· Dominada {mastered}</span>}
+    </span>
+  );
+  const text = (
+    <span className="min-w-0 pr-4">
+      <span className="block text-ink font-medium text-[15px] leading-tight">{correction.text}</span>
+      {meta}
+    </span>
+  );
 
   const chip = change && (
     <span className="mr-2 shrink-0 rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-accent">
@@ -39,7 +60,8 @@ export default function CorrectionItem({ correction, onUpdate, onDelete, onMove,
   );
 
   return (
-    <div className="flex items-center justify-between bg-surface pl-4 pr-1 py-1 mb-3 rounded-2xl shadow-sm border border-line">
+    <div className="bg-surface mb-3 rounded-2xl shadow-sm border border-line">
+    <div className="flex items-center justify-between pl-4 pr-1 py-1">
       {isAdmin ? (
         <button
           type="button"
@@ -47,19 +69,31 @@ export default function CorrectionItem({ correction, onUpdate, onDelete, onMove,
           aria-label={`${correction.text}. Estado: ${info.label}. Pulsa para cambiar a ${STATUS_INFO[nextStatus].label}`}
           className="flex-1 flex items-center justify-between py-2 pr-2 text-left rounded-xl transition-transform active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
-          <span className="text-ink font-medium text-[15px] leading-tight pr-4">{correction.text}</span>
+          {text}
           <span className="flex items-center">{chip}{badge}</span>
         </button>
       ) : (
         <div className="flex-1 flex items-center justify-between py-3 pr-2">
-          <p className="text-ink font-medium text-[15px] leading-tight pr-4">{correction.text}</p>
+          {text}
           {chip}
           <span role="img" aria-label={`Estado: ${info.label}`}>{badge}</span>
         </div>
       )}
 
       {/* Reordenar y eliminar (solo visibles para entrenador) */}
-      {isAdmin && (
+      {isAdmin && onAssign && (
+        <button
+          type="button"
+          onClick={() => setAssigning(a => !a)}
+          aria-expanded={assigning}
+          aria-label={`Asignar atletas: ${correction.text}`}
+          className="w-10 h-10 flex items-center justify-center text-ink-muted hover:text-accent transition-colors rounded-full focus-visible:outline-2 focus-visible:outline-accent"
+        >
+          <Users className="w-5 h-5" aria-hidden="true" />
+        </button>
+      )}
+
+      {isAdmin && !hideReorder && (
         <div className="flex flex-col ml-1">
           <button
             type="button"
@@ -92,6 +126,12 @@ export default function CorrectionItem({ correction, onUpdate, onDelete, onMove,
           <Trash2 className="w-5 h-5" aria-hidden="true" />
         </button>
       )}
+    </div>
+    {isAdmin && onAssign && assigning && (
+      <div className="px-4 pb-3">
+        <WhoPicker value={correction.who ?? []} onChange={onAssign} label="Para quién es" />
+      </div>
+    )}
     </div>
   );
 }

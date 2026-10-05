@@ -4,41 +4,52 @@ import { ChevronDown, Plus, Sparkles } from 'lucide-react';
 import { RoutinePart, ColorState } from '../types';
 import { MAX_CORRECTION_LENGTH } from '../lib/status';
 import { Change } from '../lib/changes';
+import { isFor } from '../lib/athletes';
 import CorrectionItem from './CorrectionItem';
+import WhoPicker from './WhoPicker';
 import { SectionDonut } from './ProgressCharts';
 
 interface Props {
   part: RoutinePart;
   isAdmin: boolean;
   changes: Record<string, Change>;
+  athlete: string | null;
+  onAssignCorrection: (partId: string, correctionId: string, who: string[]) => void;
   onUpdateCorrection: (partId: string, correctionId: string, status: ColorState) => void;
-  onAddCorrection: (partId: string, text: string) => void;
+  onAddCorrection: (partId: string, text: string, who: string[]) => void;
   onDeleteCorrection: (partId: string, correctionId: string) => void;
   onMoveCorrection: (partId: string, correctionId: string, direction: -1 | 1) => void;
 }
 
-export default function RoutineSection({ part, isAdmin, changes, onUpdateCorrection, onAddCorrection, onDeleteCorrection, onMoveCorrection }: Props) {
+export default function RoutineSection({ part, isAdmin, changes, athlete, onAssignCorrection, onUpdateCorrection, onAddCorrection, onDeleteCorrection, onMoveCorrection }: Props) {
   const [isOpen, setIsOpen] = useState(false);
   const [newCorrectionText, setNewCorrectionText] = useState('');
+  const [newWho, setNewWho] = useState<string[]>([]);
   const panelId = useId();
   const inputId = useId();
 
+  // "Las mías": solo las correcciones que le tocan a la atleta elegida (la entrenadora lo ve todo).
+  const visible = isAdmin ? part.corrections : part.corrections.filter(c => isFor(c, athlete));
+
   const counts = {
-    red: part.corrections.filter(c => c.status === 'red').length,
-    yellow: part.corrections.filter(c => c.status === 'yellow').length,
-    green: part.corrections.filter(c => c.status === 'green').length,
-    pink: part.corrections.filter(c => c.status === 'pink').length,
+    red: visible.filter(c => c.status === 'red').length,
+    yellow: visible.filter(c => c.status === 'yellow').length,
+    green: visible.filter(c => c.status === 'green').length,
+    pink: visible.filter(c => c.status === 'pink').length,
   };
 
-  const changeCount = part.corrections.filter(c => changes[c.id]).length;
-  const isComplete = part.corrections.length > 0 && counts.pink === part.corrections.length;
+  const changeCount = visible.filter(c => changes[c.id]).length;
+  const isComplete = visible.length > 0 && counts.pink === visible.length;
+
+  if (athlete && !isAdmin && visible.length === 0) return null;
 
   const handleAdd = (e: React.FormEvent) => {
     e.preventDefault();
     const text = newCorrectionText.trim();
     if (text === '') return;
-    onAddCorrection(part.id, text);
+    onAddCorrection(part.id, text, newWho);
     setNewCorrectionText('');
+    setNewWho([]);
   };
 
   return (
@@ -74,13 +85,13 @@ export default function RoutineSection({ part, isAdmin, changes, onUpdateCorrect
 
       {isOpen && (
         <div id={panelId} className="flex flex-col">
-          {part.corrections.length === 0 && (
+          {visible.length === 0 && (
             <p className="px-2 mb-3 text-sm text-ink-soft">
               {isAdmin ? 'Aún no hay correcciones. Añade la primera abajo.' : 'Sin correcciones en esta parte.'}
             </p>
           )}
 
-          {part.corrections.map((corr, index) => (
+          {visible.map((corr, index) => (
             <CorrectionItem
               key={corr.id}
               correction={corr}
@@ -88,14 +99,16 @@ export default function RoutineSection({ part, isAdmin, changes, onUpdateCorrect
               change={changes[corr.id]}
               onUpdate={(status) => onUpdateCorrection(part.id, corr.id, status)}
               onDelete={() => onDeleteCorrection(part.id, corr.id)}
+              onAssign={(who) => onAssignCorrection(part.id, corr.id, who)}
               onMove={(direction) => onMoveCorrection(part.id, corr.id, direction)}
               canMoveUp={index > 0}
-              canMoveDown={index < part.corrections.length - 1}
+              canMoveDown={index < visible.length - 1}
             />
           ))}
 
           {isAdmin && (
-            <form onSubmit={handleAdd} className="mt-2 flex gap-2 items-center">
+            <form onSubmit={handleAdd} className="mt-2 flex flex-col gap-3">
+              <div className="flex gap-2 items-center">
               <label htmlFor={inputId} className="sr-only">Nueva corrección para {part.name}</label>
               <input
                 id={inputId}
@@ -114,6 +127,8 @@ export default function RoutineSection({ part, isAdmin, changes, onUpdateCorrect
               >
                 <Plus className="w-5 h-5" aria-hidden="true" />
               </button>
+              </div>
+              <WhoPicker value={newWho} onChange={setNewWho} label="Para quién es" />
             </form>
           )}
         </div>
