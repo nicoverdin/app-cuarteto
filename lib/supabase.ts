@@ -18,9 +18,11 @@ export interface RoutineRow {
 }
 
 /** Lee la rutina guardada. `null` = la BD está vacía; lanza si hay un error real. */
-export async function fetchRoutine(client: SupabaseClient): Promise<RoutineRow | null> {
-  const query = (columns: string) =>
-    client.from('disco_cuarteto').select(columns).eq('id', 1).maybeSingle();
+export async function fetchRoutine(client: SupabaseClient, signal?: AbortSignal): Promise<RoutineRow | null> {
+  const query = (columns: string) => {
+    const q = client.from('disco_cuarteto').select(columns).eq('id', 1);
+    return (signal ? q.abortSignal(signal) : q).maybeSingle();
+  };
 
   let { data, error } = await query('data, updated_at');
   // 42703 = la columna no existe todavía (SQL de supabase/agregar_updated_at.sql sin ejecutar): seguimos sin fecha.

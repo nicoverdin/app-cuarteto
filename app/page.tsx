@@ -30,12 +30,20 @@ export async function generateMetadata({ searchParams }: Props): Promise<Metadat
 
 // Los datos se cargan en el servidor para evitar la cascada "HTML vacío → Cargando… → contenido".
 // Si falla, el cliente reintenta por su cuenta (y usa la copia local si no hay conexión).
+// Hay redes (p. ej. algunos servidores) desde las que Supabase no responde: sin límite de tiempo la página
+// se quedaría colgada. Tras un fallo se deja de intentar en el servidor un rato y carga el cliente.
+const SERVER_FETCH_TIMEOUT_MS = 1500;
+const SERVER_RETRY_AFTER_MS = 5 * 60_000;
+let skipServerFetchUntil = 0;
+
 async function loadInitialRoutine(): Promise<{ routine: RoutinePart[] | null; updatedAt: string | null }> {
   if (!supabase) return { routine: initialData, updatedAt: null };
+  if (Date.now() < skipServerFetchUntil) return { routine: null, updatedAt: null };
   try {
-    const row = await fetchRoutine(supabase);
+    const row = await fetchRoutine(supabase, AbortSignal.timeout(SERVER_FETCH_TIMEOUT_MS));
     return { routine: row?.data ?? initialData, updatedAt: row?.updatedAt ?? null };
   } catch {
+    skipServerFetchUntil = Date.now() + SERVER_RETRY_AFTER_MS;
     return { routine: null, updatedAt: null };
   }
 }
