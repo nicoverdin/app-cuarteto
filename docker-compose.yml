@@ -10,4 +10,13 @@ services:
     environment:
       - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
       - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+      # Consulta del reglamento (RAG). Las claves se leen del .env del servidor.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_WORKSPACE_ID=${ANTHROPIC_WORKSPACE_ID:-}
+      - VOYAGE_API_KEY=${VOYAGE_API_KEY:-}
+      - REGLAMENTO_MODEL=${REGLAMENTO_MODEL:-}
+      - REGLAMENTO_ACCESS_CODE=${REGLAMENTO_ACCESS_CODE:-}
+    volumes:
+      # Índice del reglamento (generado con scripts/build-regulation-index.mjs; no está en git)
+      - ./data:/app/data:ro
     restart: always

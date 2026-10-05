@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore } from 'react';
-import { UserCheck, WifiOff, Sparkles } from 'lucide-react';
+import Link from 'next/link';
+import { UserCheck, WifiOff, Sparkles, BookOpen } from 'lucide-react';
 import { RoutinePart, ColorState } from '../types';
 import RoutineSection from '../components/RoutineSection';
 import InstallHint from '../components/InstallHint';
@@ -301,6 +302,13 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
 
       <div className="max-w-md mx-auto px-4 mt-6">
         {updatedAt && <LastUpdated iso={updatedAt} />}
+        <Link
+          href="/reglamento"
+          className="mb-5 flex items-center justify-center gap-2 rounded-2xl border border-line bg-surface px-4 py-3 text-sm font-semibold text-accent focus-visible:outline-2 focus-visible:outline-accent"
+        >
+          <BookOpen className="w-4 h-4" aria-hidden="true" />
+          Consultar el reglamento
+        </Link>
         {!isAdmin && <InstallHint />}
         {routine.map(part => (
           <RoutineSection
