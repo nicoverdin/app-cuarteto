@@ -1,7 +1,8 @@
 "use client";
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { ChevronDown, Plus } from 'lucide-react';
 import { RoutinePart, ColorState } from '../types';
+import { MAX_CORRECTION_LENGTH } from '../lib/status';
 import CorrectionItem from './CorrectionItem';
 import { SectionDonut } from './ProgressCharts';
 
@@ -16,6 +17,8 @@ interface Props {
 export default function RoutineSection({ part, isAdmin, onUpdateCorrection, onAddCorrection, onDeleteCorrection }: Props) {
   const [isOpen, setIsOpen] = useState(false);
   const [newCorrectionText, setNewCorrectionText] = useState('');
+  const panelId = useId();
+  const inputId = useId();
 
   const counts = {
     red: part.corrections.filter(c => c.status === 'red').length,
@@ -26,32 +29,42 @@ export default function RoutineSection({ part, isAdmin, onUpdateCorrection, onAd
 
   const handleAdd = (e: React.FormEvent) => {
     e.preventDefault();
-    if (newCorrectionText.trim() === '') return;
-    onAddCorrection(part.id, newCorrectionText);
+    const text = newCorrectionText.trim();
+    if (text === '') return;
+    onAddCorrection(part.id, text);
     setNewCorrectionText('');
   };
 
   return (
     <section className="mb-5">
-      <div 
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex justify-between items-center mb-3 px-2 cursor-pointer select-none group"
-      >
-        <div className="flex items-center gap-2">
-          <ChevronDown className={`w-6 h-6 text-gray-400 transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`} />
-          <h2 className="text-[20px] font-bold text-gray-900 tracking-tight group-active:text-[#FFB5C0] transition-colors">
-            {part.name}
-          </h2>
-        </div>
-        <SectionDonut counts={counts} />
-      </div>
-      
+      <h2>
+        <button
+          type="button"
+          onClick={() => setIsOpen(!isOpen)}
+          aria-expanded={isOpen}
+          aria-controls={panelId}
+          className="w-full flex justify-between items-center mb-3 px-2 py-1 text-left rounded-xl group focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        >
+          <span className="flex items-center gap-2">
+            <ChevronDown aria-hidden="true" className={`w-6 h-6 text-ink-muted transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`} />
+            <span className="text-[20px] font-bold text-ink tracking-tight">{part.name}</span>
+          </span>
+          <SectionDonut counts={counts} />
+        </button>
+      </h2>
+
       {isOpen && (
-        <div className="flex flex-col transition-all duration-300">
+        <div id={panelId} className="flex flex-col">
+          {part.corrections.length === 0 && (
+            <p className="px-2 mb-3 text-sm text-ink-soft">
+              {isAdmin ? 'Aún no hay correcciones. Añade la primera abajo.' : 'Sin correcciones en esta parte.'}
+            </p>
+          )}
+
           {part.corrections.map(corr => (
-            <CorrectionItem 
-              key={corr.id} 
-              correction={corr} 
+            <CorrectionItem
+              key={corr.id}
+              correction={corr}
               isAdmin={isAdmin}
               onUpdate={(status) => onUpdateCorrection(part.id, corr.id, status)}
               onDelete={() => onDeleteCorrection(part.id, corr.id)}
@@ -60,19 +73,23 @@ export default function RoutineSection({ part, isAdmin, onUpdateCorrection, onAd
 
           {isAdmin && (
             <form onSubmit={handleAdd} className="mt-2 flex gap-2 items-center">
-              <input 
-                type="text" 
+              <label htmlFor={inputId} className="sr-only">Nueva corrección para {part.name}</label>
+              <input
+                id={inputId}
+                type="text"
                 value={newCorrectionText}
                 onChange={(e) => setNewCorrectionText(e.target.value)}
-                placeholder="Nueva corrección..." 
-                className="flex-1 bg-gray-200/60 rounded-xl px-4 py-3 text-[15px] outline-none focus:ring-2 focus:ring-[#E0218A]/50 transition-all placeholder:text-gray-500"
+                maxLength={MAX_CORRECTION_LENGTH}
+                placeholder="Nueva corrección…"
+                className="flex-1 bg-track rounded-xl px-4 py-3 text-[15px] outline-none focus:ring-2 focus:ring-accent transition-all placeholder:text-ink-muted"
               />
-              <button 
-                type="submit" 
+              <button
+                type="submit"
                 disabled={!newCorrectionText.trim()}
-                className="bg-[#FFB5C0] text-white p-3 rounded-xl disabled:opacity-40 transition-opacity"
+                aria-label="Añadir corrección"
+                className="bg-accent text-on-accent w-12 h-12 flex items-center justify-center rounded-xl disabled:opacity-40 transition-opacity focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
-                <Plus className="w-5 h-5" />
+                <Plus className="w-5 h-5" aria-hidden="true" />
               </button>
             </form>
           )}

@@ -1,13 +1,9 @@
 "use client";
-import { Trash2 } from 'lucide-react';
+import { Trash2, X, Clock, Check, Heart } from 'lucide-react';
 import { Correction } from '../types';
+import { STATUS_INFO, STATUS_ORDER } from '../lib/status';
 
-const colorStyles = {
-  red: 'bg-[#FF3B30] shadow-[#FF3B30]/40',
-  yellow: 'bg-[#FFCC00] shadow-[#FFCC00]/40',
-  green: 'bg-[#34C759] shadow-[#34C759]/40',
-  pink: 'bg-[#FFB5C0] shadow-[#FFB5C0]/50', 
-};
+const STATUS_ICON = { red: X, yellow: Clock, green: Check, pink: Heart };
 
 interface Props {
   correction: Correction;
@@ -17,38 +13,48 @@ interface Props {
 }
 
 export default function CorrectionItem({ correction, onUpdate, onDelete, isAdmin }: Props) {
-  const cycleColor = (e: React.MouseEvent) => {
-    if (!isAdmin) return;
-    const sequence: Correction['status'][] = ['red', 'yellow', 'green', 'pink'];
-    const nextIndex = (sequence.indexOf(correction.status) + 1) % sequence.length;
-    onUpdate(sequence[nextIndex]);
-  };
+  const info = STATUS_INFO[correction.status];
+  const Icon = STATUS_ICON[correction.status];
+
+  const nextStatus = STATUS_ORDER[(STATUS_ORDER.indexOf(correction.status) + 1) % STATUS_ORDER.length];
+
+  const badge = (
+    <span
+      className="w-8 h-8 rounded-full shadow-md flex-shrink-0 flex items-center justify-center transition-colors duration-300"
+      style={{ backgroundColor: info.color }}
+    >
+      <Icon className={`w-4 h-4 ${info.iconClass}`} strokeWidth={3} aria-hidden="true" />
+    </span>
+  );
 
   return (
-    <div className={`flex items-center justify-between bg-white pl-4 pr-2 py-2 mb-3 rounded-2xl shadow-sm border border-gray-100 transition-transform ${isAdmin ? 'active:scale-[0.98]' : ''}`}>
-      
-      {/* Zona izquierda (Texto y Color) */}
-      <div 
-        onClick={cycleColor}
-        className={`flex-1 flex items-center justify-between py-1 pr-2 ${isAdmin ? 'cursor-pointer' : 'cursor-default'}`}
-      >
-        <p className="text-gray-800 font-medium text-[15px] leading-tight pr-4 select-none">
-          {correction.text}
-        </p>
-        <div className={`w-7 h-7 rounded-full shadow-md flex-shrink-0 transition-colors duration-300 ${colorStyles[correction.status]}`} />
-      </div>
+    <div className="flex items-center justify-between bg-surface pl-4 pr-1 py-1 mb-3 rounded-2xl shadow-sm border border-line">
+      {isAdmin ? (
+        <button
+          type="button"
+          onClick={() => onUpdate(nextStatus)}
+          aria-label={`${correction.text}. Estado: ${info.label}. Pulsa para cambiar a ${STATUS_INFO[nextStatus].label}`}
+          className="flex-1 flex items-center justify-between py-2 pr-2 text-left rounded-xl transition-transform active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        >
+          <span className="text-ink font-medium text-[15px] leading-tight pr-4">{correction.text}</span>
+          {badge}
+        </button>
+      ) : (
+        <div className="flex-1 flex items-center justify-between py-3 pr-2">
+          <p className="text-ink font-medium text-[15px] leading-tight pr-4">{correction.text}</p>
+          <span role="img" aria-label={`Estado: ${info.label}`}>{badge}</span>
+        </div>
+      )}
 
       {/* Botón de eliminar (Solo visible para entrenador) */}
       {isAdmin && (
-        <button 
-          onClick={(e) => {
-            e.stopPropagation(); // Evita que se cambie el color al borrar
-            onDelete();
-          }}
-          className="p-2 ml-1 text-gray-300 active:text-red-500 transition-colors rounded-full"
-          aria-label="Eliminar corrección"
+        <button
+          type="button"
+          onClick={onDelete}
+          className="w-11 h-11 ml-1 flex items-center justify-center text-ink-muted hover:text-danger active:text-danger transition-colors rounded-full focus-visible:outline-2 focus-visible:outline-accent"
+          aria-label={`Eliminar corrección: ${correction.text}`}
         >
-          <Trash2 className="w-5 h-5" />
+          <Trash2 className="w-5 h-5" aria-hidden="true" />
         </button>
       )}
     </div>
