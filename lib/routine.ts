@@ -73,9 +73,20 @@ export function readCachedRoutine(): RoutinePart[] | null {
   }
 }
 
-export function writeCachedRoutine(routine: RoutinePart[]) {
+const UPDATED_KEY = 'cuarteto:updated-at';
+
+export function readCachedUpdatedAt(): string | null {
+  try {
+    return localStorage.getItem(UPDATED_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function writeCachedRoutine(routine: RoutinePart[], updatedAt?: string | null) {
   try {
     localStorage.setItem(CACHE_KEY, JSON.stringify(routine));
+    if (updatedAt) localStorage.setItem(UPDATED_KEY, updatedAt);
   } catch {
     /* almacenamiento no disponible: se ignora */
   }

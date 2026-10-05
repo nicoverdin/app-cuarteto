@@ -11,9 +11,24 @@ export const supabase: SupabaseClient | null = url.startsWith('http')
   ? createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
   : null;
 
+export interface RoutineRow {
+  data: RoutinePart[];
+  /** ISO de la última modificación; null si la tabla aún no tiene la columna updated_at. */
+  updatedAt: string | null;
+}
+
 /** Lee la rutina guardada. `null` = la BD está vacía; lanza si hay un error real. */
-export async function fetchRoutine(client: SupabaseClient): Promise<RoutinePart[] | null> {
-  const { data, error } = await client.from('disco_cuarteto').select('data').eq('id', 1).maybeSingle();
+export async function fetchRoutine(client: SupabaseClient): Promise<RoutineRow | null> {
+  const query = (columns: string) =>
+    client.from('disco_cuarteto').select(columns).eq('id', 1).maybeSingle();
+
+  let { data, error } = await query('data, updated_at');
+  // 42703 = la columna no existe todavía (SQL de supabase/agregar_updated_at.sql sin ejecutar): seguimos sin fecha.
+  if (error && (error.code === '42703' || /updated_at/.test(error.message))) {
+    ({ data, error } = await query('data'));
+  }
   if (error) throw error;
-  return data && isValidRoutine(data.data) ? data.data : null;
+
+  const row = data as unknown as { data?: unknown; updated_at?: string | null } | null;
+  return row && isValidRoutine(row.data) ? { data: row.data, updatedAt: row.updated_at ?? null } : null;
 }

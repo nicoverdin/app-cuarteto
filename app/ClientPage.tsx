@@ -4,10 +4,11 @@ import { UserCheck, WifiOff, Sparkles } from 'lucide-react';
 import { RoutinePart, ColorState } from '../types';
 import RoutineSection from '../components/RoutineSection';
 import InstallHint from '../components/InstallHint';
+import LastUpdated from '../components/LastUpdated';
 import { MainProgressBar, StatusLegend } from '../components/ProgressCharts';
 import { supabase, fetchRoutine } from '../lib/supabase';
 import { diffAgainst, getSeen, getServerSeen, markSeen, reloadSeenBaseline, subscribeSeen } from '../lib/changes';
-import { initialData, isValidRoutine, readCachedRoutine, writeCachedRoutine } from '../lib/routine';
+import { initialData, isValidRoutine, readCachedRoutine, readCachedUpdatedAt, writeCachedRoutine } from '../lib/routine';
 
 interface Toast {
   message: string;
@@ -29,12 +30,18 @@ function useServiceWorker() {
   }, []);
 }
 
-export default function ClientPage({ initialRoutine }: { initialRoutine: RoutinePart[] | null }) {
+interface Props {
+  initialRoutine: RoutinePart[] | null;
+  initialUpdatedAt: string | null;
+}
+
+export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) {
   const [routine, setRoutine] = useState<RoutinePart[]>(initialRoutine ?? (supabase ? [] : initialData));
   // false en servidor/hidratación, se resuelve en el cliente sin setState en un efecto
   const isAdmin = useSyncExternalStore(() => () => {}, isCoachUrl, () => false);
   const [isLoading, setIsLoading] = useState(!initialRoutine && !!supabase);
   const [loadError, setLoadError] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState<string | null>(initialUpdatedAt);
   const [isOffline, setIsOffline] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [toast, setToast] = useState<Toast | null>(null);
@@ -73,8 +80,8 @@ export default function ClientPage({ initialRoutine }: { initialRoutine: Routine
 
   // Guardamos la última versión conocida para poder abrir la app sin conexión.
   useEffect(() => {
-    if (initialRoutine) writeCachedRoutine(initialRoutine);
-  }, [initialRoutine]);
+    if (initialRoutine) writeCachedRoutine(initialRoutine, initialUpdatedAt);
+  }, [initialRoutine, initialUpdatedAt]);
 
   // Carga inicial (si el servidor no pudo), refresco al volver a la app y cambios en vivo.
   useEffect(() => {
@@ -84,11 +91,12 @@ export default function ClientPage({ initialRoutine }: { initialRoutine: Routine
     // silent: refrescos en segundo plano, que nunca rompen lo que ya se ve.
     const load = async (silent: boolean) => {
       try {
-        const data = await fetchRoutine(client);
+        const row = await fetchRoutine(client);
         // Un fallo de red/permisos NUNCA debe sobrescribir los datos guardados.
-        if (data) {
-          setRoutine(data);
-          writeCachedRoutine(data);
+        if (row) {
+          setRoutine(row.data);
+          setUpdatedAt(row.updatedAt);
+          writeCachedRoutine(row.data, row.updatedAt);
         } else if (!silent) {
           // La BD está realmente vacía: usamos el respaldo y solo el entrenador lo persiste.
           setRoutine(initialData);
@@ -102,6 +110,7 @@ export default function ClientPage({ initialRoutine }: { initialRoutine: Routine
         const cached = readCachedRoutine();
         if (cached) {
           setRoutine(cached);
+          setUpdatedAt(readCachedUpdatedAt());
           setIsOffline(true);
         } else {
           setLoadError(true);
@@ -126,10 +135,11 @@ export default function ClientPage({ initialRoutine }: { initialRoutine: Routine
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'disco_cuarteto', filter: 'id=eq.1' },
         payload => {
-          const next = (payload.new as { data?: unknown }).data;
-          if (isValidRoutine(next)) {
-            setRoutine(next);
-            writeCachedRoutine(next);
+          const row = payload.new as { data?: unknown; updated_at?: string | null };
+          if (isValidRoutine(row.data)) {
+            setRoutine(row.data);
+            setUpdatedAt(row.updated_at ?? null);
+            writeCachedRoutine(row.data, row.updated_at);
           }
         }
       )
@@ -157,13 +167,15 @@ export default function ClientPage({ initialRoutine }: { initialRoutine: Routine
     if (!isAdmin || !supabase) return;
 
     try {
-      const base = (await fetchRoutine(supabase)) ?? previous;
+      const base = (await fetchRoutine(supabase))?.data ?? previous;
       const next = mutate(base);
       const { error } = await supabase.from('disco_cuarteto').update({ data: next }).eq('id', 1);
       if (error) throw error;
 
+      const savedAt = new Date().toISOString();
       setRoutine(next);
-      writeCachedRoutine(next);
+      setUpdatedAt(savedAt);
+      writeCachedRoutine(next, savedAt);
       showToast({
         message: okMessage,
         kind: 'ok',
@@ -288,6 +300,7 @@ export default function ClientPage({ initialRoutine }: { initialRoutine: Routine
       </div>
 
       <div className="max-w-md mx-auto px-4 mt-6">
+        {updatedAt && <LastUpdated iso={updatedAt} />}
         {!isAdmin && <InstallHint />}
         {routine.map(part => (
           <RoutineSection
