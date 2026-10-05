@@ -94,7 +94,9 @@ const HEADING = /^\s{0,10}(\d+(?:\.\d+){0,3})\.?\s+([A-Z][^a-z]{2,90})$/;
 // Subapartados "9.2.1 Base value penalties": exigen al menos dos niveles para no confundirlos con listas "1. Texto".
 const SUBHEADING = /^\s{0,10}(\d+\.\d+(?:\.\d+){0,2})\s+([A-Z][A-Za-z0-9 &,/’'()\-–:]{2,80})$/;
 
-function parseHeading(line) {
+function parseHeading(rawLine) {
+  // El PDF tiene erratas como "3. 10 MUSIC": se repara a "3.10 MUSIC" solo si sigue un título en mayúsculas.
+  const line = rawLine.replace(/^(\s*\d+)\.\s+(\d+)(\s+[A-Z])/, '$1.$2$3');
   if (/\.{4,}/.test(line)) return null; // índice con puntos
   if (/\s{2,}\d+\s*$/.test(line)) return null; // índice con nº de página
   const m = HEADING.exec(line) ?? (/\s{2,}\S/.test(line.trim()) ? null : SUBHEADING.exec(line));
@@ -110,7 +112,12 @@ function chunkDocument(source, pages) {
   let cur = null;
 
   const label = () => stack.map(h => `${h.number} ${h.title}`).join(' > ') || 'Preamble';
-  const start = page => ({ lines: [], words: 0, section: label(), pageStart: page, pageEnd: page });
+  const start = page => ({ lines: [], words: 0, section: label(), extra: [], pageStart: page, pageEnd: page });
+  // Si un fragmento reúne varias secciones pequeñas, la etiqueta las nombra todas (no solo la primera).
+  const fullLabel = c => {
+    const extras = c.extra.length > 3 ? [...c.extra.slice(0, 2), '…', c.extra.at(-1)] : c.extra;
+    return extras.length ? `${c.section} + ${extras.join(' + ')}` : c.section;
+  };
   const flush = () => {
     if (!cur) return;
     const body = cur.lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
@@ -119,7 +126,7 @@ function chunkDocument(source, pages) {
         id: `${source.id}-${String(chunks.length + 1).padStart(3, '0')}`,
         docId: source.id,
         docTitle: source.title,
-        section: cur.section,
+        section: fullLabel(cur),
         pageStart: cur.pageStart,
         pageEnd: cur.pageEnd,
         text: body,
@@ -143,7 +150,7 @@ function chunkDocument(source, pages) {
         } else {
           while (stack.length && stack.at(-1).level >= h.level) stack.pop();
           stack.push(h);
-          cur.section = label();
+          cur.extra.push(`${h.number} ${h.title}`);
         }
         cur.lines.push(line.trim());
         cur.words += wordCount(line);
