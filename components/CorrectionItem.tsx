@@ -1,5 +1,5 @@
 "use client";
-import { Trash2, X, Clock, Check, Heart } from 'lucide-react';
+import { Trash2, X, Clock, Check, Heart, ChevronUp, ChevronDown } from 'lucide-react';
 import { Correction } from '../types';
 import { STATUS_INFO, STATUS_ORDER } from '../lib/status';
 
@@ -9,10 +9,13 @@ interface Props {
   correction: Correction;
   onUpdate: (newStatus: Correction['status']) => void;
   onDelete: () => void;
+  onMove: (direction: -1 | 1) => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
   isAdmin: boolean;
 }
 
-export default function CorrectionItem({ correction, onUpdate, onDelete, isAdmin }: Props) {
+export default function CorrectionItem({ correction, onUpdate, onDelete, onMove, canMoveUp, canMoveDown, isAdmin }: Props) {
   const info = STATUS_INFO[correction.status];
   const Icon = STATUS_ICON[correction.status];
 
@@ -46,7 +49,30 @@ export default function CorrectionItem({ correction, onUpdate, onDelete, isAdmin
         </div>
       )}
 
-      {/* Botón de eliminar (Solo visible para entrenador) */}
+      {/* Reordenar y eliminar (solo visibles para entrenador) */}
+      {isAdmin && (
+        <div className="flex flex-col ml-1">
+          <button
+            type="button"
+            onClick={() => onMove(-1)}
+            disabled={!canMoveUp}
+            aria-label={`Subir: ${correction.text}`}
+            className="w-10 h-6 flex items-center justify-center text-ink-muted hover:text-accent disabled:opacity-25 disabled:hover:text-ink-muted transition-colors rounded-md focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            <ChevronUp className="w-5 h-5" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            onClick={() => onMove(1)}
+            disabled={!canMoveDown}
+            aria-label={`Bajar: ${correction.text}`}
+            className="w-10 h-6 flex items-center justify-center text-ink-muted hover:text-accent disabled:opacity-25 disabled:hover:text-ink-muted transition-colors rounded-md focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            <ChevronDown className="w-5 h-5" aria-hidden="true" />
+          </button>
+        </div>
+      )}
+
       {isAdmin && (
         <button
           type="button"

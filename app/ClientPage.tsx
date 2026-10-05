@@ -172,6 +172,19 @@ export default function ClientPage({ initialRoutine }: { initialRoutine: Routine
     );
   };
 
+  const moveCorrection = (partId: string, correctionId: string, direction: -1 | 1) =>
+    applyChange(
+      mapPart(partId, part => {
+        const from = part.corrections.findIndex(c => c.id === correctionId);
+        const to = from + direction;
+        if (from < 0 || to < 0 || to >= part.corrections.length) return part;
+        const corrections = [...part.corrections];
+        [corrections[from], corrections[to]] = [corrections[to], corrections[from]];
+        return { ...part, corrections };
+      }),
+      'Orden actualizado'
+    );
+
   const deleteCorrection = (partId: string, correctionId: string) =>
     applyChange(
       mapPart(partId, part => ({ ...part, corrections: part.corrections.filter(c => c.id !== correctionId) })),
@@ -248,6 +261,7 @@ export default function ClientPage({ initialRoutine }: { initialRoutine: Routine
             onUpdateCorrection={updateCorrection}
             onAddCorrection={addCorrection}
             onDeleteCorrection={deleteCorrection}
+            onMoveCorrection={moveCorrection}
           />
         ))}
       </div>

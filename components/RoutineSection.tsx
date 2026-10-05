@@ -12,9 +12,10 @@ interface Props {
   onUpdateCorrection: (partId: string, correctionId: string, status: ColorState) => void;
   onAddCorrection: (partId: string, text: string) => void;
   onDeleteCorrection: (partId: string, correctionId: string) => void;
+  onMoveCorrection: (partId: string, correctionId: string, direction: -1 | 1) => void;
 }
 
-export default function RoutineSection({ part, isAdmin, onUpdateCorrection, onAddCorrection, onDeleteCorrection }: Props) {
+export default function RoutineSection({ part, isAdmin, onUpdateCorrection, onAddCorrection, onDeleteCorrection, onMoveCorrection }: Props) {
   const [isOpen, setIsOpen] = useState(false);
   const [newCorrectionText, setNewCorrectionText] = useState('');
   const panelId = useId();
@@ -61,13 +62,16 @@ export default function RoutineSection({ part, isAdmin, onUpdateCorrection, onAd
             </p>
           )}
 
-          {part.corrections.map(corr => (
+          {part.corrections.map((corr, index) => (
             <CorrectionItem
               key={corr.id}
               correction={corr}
               isAdmin={isAdmin}
               onUpdate={(status) => onUpdateCorrection(part.id, corr.id, status)}
               onDelete={() => onDeleteCorrection(part.id, corr.id)}
+              onMove={(direction) => onMoveCorrection(part.id, corr.id, direction)}
+              canMoveUp={index > 0}
+              canMoveDown={index < part.corrections.length - 1}
             />
           ))}
 
