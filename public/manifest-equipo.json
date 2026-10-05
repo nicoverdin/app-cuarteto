@@ -1,6 +1,6 @@
 {
-  "name": "Cuarteto Tracker",
-  "short_name": "Tracker",
+  "name": "Programa Cuarteto",
+  "short_name": "Cuarteto",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#F2F2F7",

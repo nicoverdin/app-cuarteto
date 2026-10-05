@@ -1,7 +1,7 @@
 {
   "name": "Lyra Coach",
   "short_name": "Coach",
-  "start_url": "/entrenador", 
+  "start_url": "/?entrenador=nico",
   "display": "standalone",
   "background_color": "#F2F2F7",
   "theme_color": "#F2F2F7",
