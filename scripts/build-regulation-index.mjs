@@ -192,7 +192,7 @@ async function embedBatch(batch, inputType, model) {
 }
 
 async function embed(texts, inputType) {
-  const model = process.env.VOYAGE_MODEL ?? 'voyage-4';
+  const model = process.env.VOYAGE_MODEL || 'voyage-4';
   const batches = [];
   let current = [];
   let tokens = 0;

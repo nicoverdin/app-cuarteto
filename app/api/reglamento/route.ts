@@ -51,6 +51,8 @@ export async function POST(request: Request) {
     if (!result.warning) cacheSet(key, result);
     return json(result);
   } catch (e) {
+    // Sin datos sensibles: solo el tipo, el estado HTTP y el mensaje del error.
+    console.error('[reglamento]', e instanceof Error ? e.name : typeof e, (e as { status?: number }).status ?? '', e instanceof Error ? e.message.slice(0, 300) : '');
     if (e instanceof Anthropic.RateLimitError) {
       return json({ error: 'ocupado', message: 'El servicio está saturado. Inténtalo en un momento.' }, 429);
     }

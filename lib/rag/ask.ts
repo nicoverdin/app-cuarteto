@@ -17,8 +17,9 @@ type BetaMessage = Anthropic.Beta.Messages.BetaMessage;
 /** Fragmentos que se pasan al modelo (3-5 según el modo). */
 const TOP_K: Record<Mode, number> = { buscar: 8, breve: 3, experto: 5 };
 
-const MODEL = () => process.env.REGLAMENTO_MODEL ?? 'claude-opus-5-5';
-const REWRITE_MODEL = () => process.env.REGLAMENTO_REWRITE_MODEL ?? 'claude-haiku-4-5';
+// `||` y no `??`: docker-compose pasa las variables no definidas como cadena vacía.
+const MODEL = () => process.env.REGLAMENTO_MODEL || 'claude-opus-5-5';
+const REWRITE_MODEL = () => process.env.REGLAMENTO_REWRITE_MODEL || 'claude-haiku-4-5';
 
 export interface AskDeps {
   /** Reformula la pregunta en inglés técnico; si falla, se busca con la pregunta original. */
