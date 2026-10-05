@@ -1,159 +1,183 @@
 "use client";
-import { useState, useEffect } from 'react';
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from 'react';
+import { UserCheck, WifiOff } from 'lucide-react';
 import { RoutinePart, ColorState } from '../types';
 import RoutineSection from '../components/RoutineSection';
-import { MainProgressBar } from '../components/ProgressCharts';
+import { MainProgressBar, StatusLegend } from '../components/ProgressCharts';
+import { supabase, fetchRoutine } from '../lib/supabase';
+import { initialData, isValidRoutine, readCachedRoutine, writeCachedRoutine } from '../lib/routine';
 
-// Cliente de Supabase seguro para evitar fallos si las variables no están en el build
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+interface Toast {
+  message: string;
+  kind: 'ok' | 'error';
+  action?: { label: string; run: () => void };
+}
 
-const supabase: SupabaseClient | null =
-  supabaseUrl.startsWith('http') ? createClient(supabaseUrl, supabaseAnonKey) : null;
+type Mutation = (routine: RoutinePart[]) => RoutinePart[];
 
-// Tu initialData se queda como "respaldo" si la BD está vacía
-const initialData: RoutinePart[] = [
-  {
-    id: 'p1', name: 'Transición a cluster',
-    corrections: [
-      { id: 'c1', text: 'Mantener la velocidad y bloque compacto al cruzar', status: 'yellow' }
-    ]
-  },
-  {
-    id: 'p2', name: 'Cluster',
-    corrections: [
-      { id: 'c2', text: 'Sincronización exacta en la elevación entre Mabel y Raquel', status: 'red' },
-      { id: 'c3', text: 'Tensión en los brazos libres hasta el último tiempo', status: 'green' }
-    ]
-  },
-  {
-    id: 'p3', name: 'Trans. de cluster a cambio de música',
-    corrections: [
-      { id: 'c4', text: 'Limpiar el filo de salida', status: 'yellow' }
-    ]
-  },
-  {
-    id: 'p4', name: 'Transición a creativa',
-    corrections: [
-      { id: 'c5', text: 'Fluidez en los cruces hacia atrás', status: 'pink' }
-    ]
-  },
-  {
-    id: 'p5', name: 'Creativa',
-    corrections: [
-      { id: 'c6', text: 'Expresión facial acorde al acento musical', status: 'green' }
-    ]
-  },
-  {
-    id: 'p6', name: 'Transición a traveling',
-    corrections: [
-      { id: 'c7', text: 'Cuidado con la distancia entre Luar y Martina al entrar', status: 'yellow' }
-    ]
-  },
-  {
-    id: 'p7', name: 'Traveling',
-    corrections: [
-      { id: 'c8', text: 'Postura corporal erguida en los giros, no bajar la mirada', status: 'red' }
-    ]
-  },
-  {
-    id: 'p8', name: 'Línea',
-    corrections: [
-      { id: 'c9', text: 'Alineación perfecta en el eje central de la pista', status: 'yellow' }
-    ]
-  },
-  {
-    id: 'p9', name: 'Final',
-    corrections: [
-      { id: 'c10', text: 'Mantener la pose final 3 segundos estáticas', status: 'pink' }
-    ]
-  },
-];
+const isCoachUrl = () =>
+  typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('entrenador') === 'nico';
 
-export default function ClientPage() {
-  const [routine, setRoutine] = useState<RoutinePart[]>([]);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-
-  // 1. Detectar si eres tú
+// Registra el service worker (solo producción) para poder abrir la app sin conexión.
+function useServiceWorker() {
   useEffect(() => {
-    if (typeof window !== 'undefined' && window.location.search.includes('entrenador=nico')) {
-      setIsAdmin(true);
+    if (process.env.NODE_ENV === 'production' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
     }
   }, []);
+}
 
-// 2. Cargar datos desde Supabase al entrar
-  useEffect(() => {
-    const fetchRoutine = async () => {
-      if (!supabase) {
-        setRoutine(initialData);
-        setIsLoading(false);
-        return;
-      }
+export default function ClientPage({ initialRoutine }: { initialRoutine: RoutinePart[] | null }) {
+  const [routine, setRoutine] = useState<RoutinePart[]>(initialRoutine ?? (supabase ? [] : initialData));
+  // false en servidor/hidratación, se resuelve en el cliente sin setState en un efecto
+  const isAdmin = useSyncExternalStore(() => () => {}, isCoachUrl, () => false);
+  const [isLoading, setIsLoading] = useState(!initialRoutine && !!supabase);
+  const [loadError, setLoadError] = useState(false);
+  const [isOffline, setIsOffline] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [toast, setToast] = useState<Toast | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-      // Añadimos '?' aquí para asegurar que TypeScript sabe que supabase no es null
-      const { data } = await supabase
-        .from('disco_cuarteto')
-        .select('data')
-        .eq('id', 1)
-        .single();
+  useServiceWorker();
 
-      if (data && data.data && data.data.length > 0) {
-        setRoutine(data.data);
-      } else {
-        setRoutine(initialData);
-        await supabase?.from('disco_cuarteto').update({ data: initialData }).eq('id', 1);
-      }
-      setIsLoading(false);
-    };
-
-    fetchRoutine();
+  const showToast = useCallback((t: Toast) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast(t);
+    toastTimer.current = setTimeout(() => setToast(null), t.action ? 6000 : 3000);
   }, []);
 
-  // 3. Función maestra para guardar en la BD
-  const saveToDB = async (newRoutine: RoutinePart[]) => {
-    setRoutine(newRoutine);
-    if (isAdmin && supabase) {
-      await supabase.from('disco_cuarteto').update({ data: newRoutine }).eq('id', 1);
+  // Guardamos la última versión conocida para poder abrir la app sin conexión.
+  useEffect(() => {
+    if (initialRoutine) writeCachedRoutine(initialRoutine);
+  }, [initialRoutine]);
+
+  // Carga inicial (si el servidor no pudo), refresco al volver a la app y cambios en vivo.
+  useEffect(() => {
+    if (!supabase) return;
+    const client = supabase;
+
+    // silent: refrescos en segundo plano, que nunca rompen lo que ya se ve.
+    const load = async (silent: boolean) => {
+      try {
+        const data = await fetchRoutine(client);
+        // Un fallo de red/permisos NUNCA debe sobrescribir los datos guardados.
+        if (data) {
+          setRoutine(data);
+          writeCachedRoutine(data);
+        } else if (!silent) {
+          // La BD está realmente vacía: usamos el respaldo y solo el entrenador lo persiste.
+          setRoutine(initialData);
+          if (isCoachUrl()) {
+            await client.from('disco_cuarteto').update({ data: initialData }).eq('id', 1);
+          }
+        }
+        setIsOffline(false);
+      } catch {
+        if (silent) return;
+        const cached = readCachedRoutine();
+        if (cached) {
+          setRoutine(cached);
+          setIsOffline(true);
+        } else {
+          setLoadError(true);
+        }
+      } finally {
+        if (!silent) setIsLoading(false);
+      }
+    };
+
+    if (!initialRoutine || reloadKey > 0) load(false);
+
+    const refresh = () => {
+      if (document.visibilityState === 'visible') load(true);
+    };
+    document.addEventListener('visibilitychange', refresh);
+    window.addEventListener('online', refresh);
+
+    // Cambios de otros dispositivos (requiere Realtime activado para la tabla; si no, funciona el refresco al volver).
+    const channel = client
+      .channel('disco_cuarteto_changes')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'disco_cuarteto', filter: 'id=eq.1' },
+        payload => {
+          const next = (payload.new as { data?: unknown }).data;
+          if (isValidRoutine(next)) {
+            setRoutine(next);
+            writeCachedRoutine(next);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      document.removeEventListener('visibilitychange', refresh);
+      window.removeEventListener('online', refresh);
+      client.removeChannel(channel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadKey]);
+
+  const retryLoad = () => {
+    setLoadError(false);
+    setIsLoading(true);
+    setReloadKey(k => k + 1);
+  };
+
+  // Guardado optimista con rollback. Antes de escribir se relee la versión más reciente de la BD
+  // y se aplica el cambio sobre ella, para no pisar lo que otro dispositivo haya cambiado.
+  const applyChange = async (mutate: Mutation, okMessage: string, undoable = false) => {
+    const previous = routine;
+    setRoutine(mutate(previous));
+    if (!isAdmin || !supabase) return;
+
+    try {
+      const base = (await fetchRoutine(supabase)) ?? previous;
+      const next = mutate(base);
+      const { error } = await supabase.from('disco_cuarteto').update({ data: next }).eq('id', 1);
+      if (error) throw error;
+
+      setRoutine(next);
+      writeCachedRoutine(next);
+      showToast({
+        message: okMessage,
+        kind: 'ok',
+        action: undoable
+          ? { label: 'Deshacer', run: () => { setToast(null); applyChange(() => base, 'Cambio deshecho'); } }
+          : undefined,
+      });
+    } catch {
+      setRoutine(previous);
+      showToast({ message: 'No se pudo guardar. Se ha revertido el cambio.', kind: 'error' });
     }
   };
 
-  const updateCorrection = (partId: string, correctionId: string, newStatus: ColorState) => {
-    const newRoutine = routine.map(part => {
-      if (part.id !== partId) return part;
-      return {
+  const mapPart = (partId: string, fn: (p: RoutinePart) => RoutinePart): Mutation =>
+    routine => routine.map(part => (part.id === partId ? fn(part) : part));
+
+  const updateCorrection = (partId: string, correctionId: string, newStatus: ColorState) =>
+    applyChange(
+      mapPart(partId, part => ({
         ...part,
-        corrections: part.corrections.map(c =>
-          c.id === correctionId ? { ...c, status: newStatus } : c
-        )
-      };
-    });
-    saveToDB(newRoutine);
+        corrections: part.corrections.map(c => (c.id === correctionId ? { ...c, status: newStatus } : c)),
+      })),
+      'Estado actualizado'
+    );
+
+  const addCorrection = (partId: string, text: string) => {
+    const correction = { id: `new-${crypto.randomUUID()}`, text, status: 'red' as ColorState };
+    applyChange(
+      mapPart(partId, part => ({ ...part, corrections: [...part.corrections, correction] })),
+      'Corrección añadida'
+    );
   };
 
-const addCorrection = (partId: string, text: string) => {
-  const newRoutine = routine.map(part => {
-    if (part.id !== partId) return part;
-    return {
-      ...part,
-      // Le indicamos a TypeScript que 'red' es del tipo ColorState
-      corrections: [...part.corrections, { id: `new-${Date.now()}`, text, status: 'red' as ColorState }]
-    };
-  });
-  saveToDB(newRoutine);
-};
-
-  const deleteCorrection = (partId: string, correctionId: string) => {
-    const newRoutine = routine.map(part => {
-      if (part.id !== partId) return part;
-      return {
-        ...part,
-        corrections: part.corrections.filter(c => c.id !== correctionId)
-      };
-    });
-    saveToDB(newRoutine);
-  };
+  const deleteCorrection = (partId: string, correctionId: string) =>
+    applyChange(
+      mapPart(partId, part => ({ ...part, corrections: part.corrections.filter(c => c.id !== correctionId) })),
+      'Corrección eliminada',
+      true
+    );
 
   const totalCounts = routine.reduce((acc, part) => {
     part.corrections.forEach(c => acc[c.status]++);
@@ -161,18 +185,55 @@ const addCorrection = (partId: string, text: string) => {
   }, { red: 0, yellow: 0, green: 0, pink: 0 });
 
   if (isLoading) {
-    return <div className="min-h-screen bg-[#F2F2F7] flex items-center justify-center">Cargando disco...</div>;
+    return (
+      <div role="status" className="min-h-screen bg-page flex items-center justify-center text-ink-soft">
+        Cargando programa…
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div role="alert" className="min-h-screen bg-page flex flex-col items-center justify-center gap-4 px-6 text-center">
+        <p className="text-ink font-semibold">No se pudo cargar el programa.</p>
+        <p className="text-sm text-ink-soft">Revisa tu conexión. Tus datos guardados no se han modificado.</p>
+        <button
+          type="button"
+          onClick={retryLoad}
+          className="bg-accent text-on-accent font-semibold px-5 py-3 rounded-xl focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        >
+          Reintentar
+        </button>
+      </div>
+    );
   }
 
   return (
-    <main className="min-h-screen bg-[#F2F2F7] pb-12">
-      <div className="sticky top-0 bg-[#F2F2F7]/90 backdrop-blur-md z-10 pt-12 pb-4 px-4 shadow-sm">
+    <main className="min-h-screen bg-page pb-24">
+      <div className="sticky top-0 bg-page/90 backdrop-blur-md z-10 pt-[max(1.5rem,env(safe-area-inset-top))] pb-4 px-4 shadow-sm">
         <div className="max-w-md mx-auto">
-          <h1 className="text-3xl font-extrabold text-gray-900 mb-4 tracking-tight">
-            Programa Cuarteto
-          </h1>
+          {isOffline && (
+            <p role="status" className="mb-3 flex items-center justify-center gap-2 rounded-xl bg-surface border border-line px-3 py-2 text-xs font-medium text-ink-soft">
+              <WifiOff className="w-4 h-4" aria-hidden="true" />
+              Sin conexión · mostrando la última versión guardada
+            </p>
+          )}
+          <div className="flex items-center justify-between mb-4">
+            <h1 className="text-3xl font-extrabold text-ink tracking-tight">
+              Programa Cuarteto
+            </h1>
+            {isAdmin && (
+              <span className="flex items-center gap-1 text-xs font-semibold text-accent bg-surface border border-accent/30 rounded-full px-2.5 py-1">
+                <UserCheck className="w-3.5 h-3.5" aria-hidden="true" />
+                Modo entrenador
+              </span>
+            )}
+          </div>
           <MainProgressBar counts={totalCounts} />
-          <p className="text-xs text-gray-500 mt-2 font-medium uppercase tracking-wider text-center">
+          <div className="mt-3">
+            <StatusLegend />
+          </div>
+          <p className="text-xs text-ink-soft mt-2 font-medium uppercase tracking-wider text-center">
             Objetivo: Todo al rosa
           </p>
         </div>
@@ -189,6 +250,27 @@ const addCorrection = (partId: string, text: string) => {
             onDeleteCorrection={deleteCorrection}
           />
         ))}
+      </div>
+
+      <div aria-live="polite" role="status" className="fixed bottom-4 inset-x-0 flex justify-center px-4 pointer-events-none">
+        {toast && (
+          <div
+            className={`pointer-events-auto max-w-md w-full flex items-center justify-between gap-3 rounded-2xl px-4 py-3 text-sm font-medium shadow-lg text-on-toast ${
+              toast.kind === 'error' ? 'bg-red-700 !text-white' : 'bg-toast'
+            }`}
+          >
+            <span>{toast.message}</span>
+            {toast.action && (
+              <button
+                type="button"
+                onClick={toast.action.run}
+                className="font-bold underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-current"
+              >
+                {toast.action.label}
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </main>
   );
