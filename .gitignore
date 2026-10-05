@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Reglamentos oficiales (propiedad de World Skate): no se publican en el repositorio
+/data/regulation/
+!.env.example
