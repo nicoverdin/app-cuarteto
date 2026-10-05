@@ -9,7 +9,7 @@ import LastUpdated from '../components/LastUpdated';
 import { MainProgressBar, StatusLegend } from '../components/ProgressCharts';
 import { supabase, fetchRoutine } from '../lib/supabase';
 import { diffAgainst, getSeen, getServerSeen, markSeen, reloadSeenBaseline, subscribeSeen } from '../lib/changes';
-import { initialData, isValidRoutine, readCachedRoutine, readCachedUpdatedAt, writeCachedRoutine } from '../lib/routine';
+import { initialData, isValidRoutine, newCorrectionId, readCachedRoutine, readCachedUpdatedAt, writeCachedRoutine } from '../lib/routine';
 
 interface Toast {
   message: string;
@@ -203,7 +203,7 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
     );
 
   const addCorrection = (partId: string, text: string) => {
-    const correction = { id: `new-${crypto.randomUUID()}`, text, status: 'red' as ColorState };
+    const correction = { id: newCorrectionId(), text, status: 'red' as ColorState };
     applyChange(
       mapPart(partId, part => ({ ...part, corrections: [...part.corrections, correction] })),
       'Corrección añadida'

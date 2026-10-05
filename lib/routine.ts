@@ -91,3 +91,10 @@ export function writeCachedRoutine(routine: RoutinePart[], updatedAt?: string | 
     /* almacenamiento no disponible: se ignora */
   }
 }
+
+// crypto.randomUUID solo existe en contextos seguros (HTTPS/localhost); en http://IP no está disponible.
+export function newCorrectionId(): string {
+  const c = globalThis.crypto;
+  if (typeof c?.randomUUID === 'function') return `new-${c.randomUUID()}`;
+  return `new-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
