@@ -1,6 +1,6 @@
 "use client";
-import { useState } from 'react';
-import { Trash2, X, Clock, Check, Heart, ChevronUp, ChevronDown, Users } from 'lucide-react';
+import { useState, type ReactNode } from 'react';
+import { Trash2, X, Clock, Check, Heart, Users } from 'lucide-react';
 import { Correction } from '../types';
 import { STATUS_INFO, STATUS_ORDER } from '../lib/status';
 import { Change } from '../lib/changes';
@@ -13,16 +13,14 @@ interface Props {
   correction: Correction;
   onUpdate: (newStatus: Correction['status']) => void;
   onDelete: () => void;
-  onMove: (direction: -1 | 1) => void;
   onAssign?: (who: string[]) => void;
-  hideReorder?: boolean;
-  canMoveUp: boolean;
-  canMoveDown: boolean;
+  // Asa para arrastrar (solo en la lista de la rutina, para reordenar).
+  handle?: ReactNode;
   isAdmin: boolean;
   change?: Change;
 }
 
-export default function CorrectionItem({ correction, onUpdate, onDelete, onMove, onAssign, hideReorder, canMoveUp, canMoveDown, isAdmin, change }: Props) {
+export default function CorrectionItem({ correction, onUpdate, onDelete, onAssign, handle, isAdmin, change }: Props) {
   const [assigning, setAssigning] = useState(false);
   const info = STATUS_INFO[correction.status];
   const Icon = STATUS_ICON[correction.status];
@@ -80,7 +78,7 @@ export default function CorrectionItem({ correction, onUpdate, onDelete, onMove,
         </div>
       )}
 
-      {/* Reordenar y eliminar (solo visibles para entrenador) */}
+      {/* Asignar, reordenar y eliminar (solo visibles para entrenador) */}
       {isAdmin && onAssign && (
         <button
           type="button"
@@ -93,28 +91,7 @@ export default function CorrectionItem({ correction, onUpdate, onDelete, onMove,
         </button>
       )}
 
-      {isAdmin && !hideReorder && (
-        <div className="flex flex-col ml-1">
-          <button
-            type="button"
-            onClick={() => onMove(-1)}
-            disabled={!canMoveUp}
-            aria-label={`Subir: ${correction.text}`}
-            className="w-10 h-6 flex items-center justify-center text-ink-muted hover:text-accent disabled:opacity-25 disabled:hover:text-ink-muted transition-colors rounded-md focus-visible:outline-2 focus-visible:outline-accent"
-          >
-            <ChevronUp className="w-5 h-5" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            onClick={() => onMove(1)}
-            disabled={!canMoveDown}
-            aria-label={`Bajar: ${correction.text}`}
-            className="w-10 h-6 flex items-center justify-center text-ink-muted hover:text-accent disabled:opacity-25 disabled:hover:text-ink-muted transition-colors rounded-md focus-visible:outline-2 focus-visible:outline-accent"
-          >
-            <ChevronDown className="w-5 h-5" aria-hidden="true" />
-          </button>
-        </div>
-      )}
+      {isAdmin && handle}
 
       {isAdmin && (
         <button

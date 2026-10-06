@@ -44,13 +44,9 @@ export default function TodayView({ routine, isAdmin, athlete, changes, onUpdate
               correction={corr}
               isAdmin={isAdmin}
               change={changes[corr.id]}
-              hideReorder
               onUpdate={status => onUpdateCorrection(part.id, corr.id, status)}
               onDelete={() => onDeleteCorrection(part.id, corr.id)}
               onAssign={who => onAssignCorrection(part.id, corr.id, who)}
-              onMove={() => {}}
-              canMoveUp={false}
-              canMoveDown={false}
             />
           ))}
         </section>

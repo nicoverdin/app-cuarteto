@@ -243,14 +243,14 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
     );
   };
 
-  const moveCorrection = (partId: string, correctionId: string, direction: -1 | 1) =>
+  const reorderCorrection = (partId: string, activeId: string, overId: string) =>
     applyChange(
       mapPart(partId, part => {
-        const from = part.corrections.findIndex(c => c.id === correctionId);
-        const to = from + direction;
-        if (from < 0 || to < 0 || to >= part.corrections.length) return part;
+        const from = part.corrections.findIndex(c => c.id === activeId);
+        const to = part.corrections.findIndex(c => c.id === overId);
+        if (from < 0 || to < 0 || from === to) return part;
         const corrections = [...part.corrections];
-        [corrections[from], corrections[to]] = [corrections[to], corrections[from]];
+        corrections.splice(to, 0, corrections.splice(from, 1)[0]);
         return { ...part, corrections };
       }),
       'Orden actualizado'
@@ -384,7 +384,7 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
             onUpdateCorrection={updateCorrection}
             onAddCorrection={addCorrection}
             onDeleteCorrection={deleteCorrection}
-            onMoveCorrection={moveCorrection}
+            onReorderCorrection={reorderCorrection}
           />
         ))}
           </>

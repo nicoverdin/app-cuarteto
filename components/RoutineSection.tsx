@@ -1,7 +1,13 @@
 "use client";
 import { useId, useState } from 'react';
-import { ChevronDown, Plus, Sparkles } from 'lucide-react';
-import { RoutinePart, ColorState } from '../types';
+import { ChevronDown, GripVertical, Plus, Sparkles } from 'lucide-react';
+import {
+  DndContext, KeyboardSensor, MouseSensor, TouchSensor, closestCenter, useSensor, useSensors, type DragEndEvent,
+} from '@dnd-kit/core';
+import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { restrictToParentElement, restrictToVerticalAxis } from '@dnd-kit/modifiers';
+import { CSS } from '@dnd-kit/utilities';
+import { RoutinePart, ColorState, Correction } from '../types';
 import { MAX_CORRECTION_LENGTH } from '../lib/status';
 import { Change } from '../lib/changes';
 import { isFor } from '../lib/athletes';
@@ -18,14 +24,63 @@ interface Props {
   onUpdateCorrection: (partId: string, correctionId: string, status: ColorState) => void;
   onAddCorrection: (partId: string, text: string, who: string[]) => void;
   onDeleteCorrection: (partId: string, correctionId: string) => void;
-  onMoveCorrection: (partId: string, correctionId: string, direction: -1 | 1) => void;
+  onReorderCorrection: (partId: string, activeId: string, overId: string) => void;
 }
 
-export default function RoutineSection({ part, isAdmin, changes, athlete, onAssignCorrection, onUpdateCorrection, onAddCorrection, onDeleteCorrection, onMoveCorrection }: Props) {
+interface RowProps {
+  correction: Correction;
+  change?: Change;
+  onUpdate: (status: ColorState) => void;
+  onDelete: () => void;
+  onAssign: (who: string[]) => void;
+}
+
+// Fila arrastrable: el asa es lo único que inicia el arrastre, así el resto de la fila sigue siendo táctil.
+function SortableRow({ correction, change, onUpdate, onDelete, onAssign }: RowProps) {
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id: correction.id });
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Translate.toString(transform), transition }}
+      className={isDragging ? 'relative z-10 opacity-90 [&>div]:shadow-lg' : undefined}
+    >
+      <CorrectionItem
+        correction={correction}
+        isAdmin
+        change={change}
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onAssign={onAssign}
+        handle={
+          <button
+            type="button"
+            ref={setActivatorNodeRef}
+            {...attributes}
+            {...listeners}
+            aria-label={`Reordenar: ${correction.text}. Arrastra, o con teclado pulsa espacio y usa las flechas`}
+            className="w-9 h-11 flex touch-none cursor-grab items-center justify-center rounded-md text-ink-muted active:cursor-grabbing hover:text-accent focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            <GripVertical className="w-5 h-5" aria-hidden="true" />
+          </button>
+        }
+      />
+    </div>
+  );
+}
+
+export default function RoutineSection({ part, isAdmin, changes, athlete, onAssignCorrection, onUpdateCorrection, onAddCorrection, onDeleteCorrection, onReorderCorrection }: Props) {
   const [isOpen, setIsOpen] = useState(false);
   const [newCorrectionText, setNewCorrectionText] = useState('');
   const [newWho, setNewWho] = useState<string[]>([]);
   const panelId = useId();
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 120, tolerance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+  const handleDragEnd = ({ active, over }: DragEndEvent) => {
+    if (over && active.id !== over.id) onReorderCorrection(part.id, String(active.id), String(over.id));
+  };
   const inputId = useId();
 
   // "Las mías": solo las correcciones que le tocan a la atleta elegida (la entrenadora lo ve todo).
@@ -91,20 +146,40 @@ export default function RoutineSection({ part, isAdmin, changes, athlete, onAssi
             </p>
           )}
 
-          {visible.map((corr, index) => (
-            <CorrectionItem
-              key={corr.id}
-              correction={corr}
-              isAdmin={isAdmin}
-              change={changes[corr.id]}
-              onUpdate={(status) => onUpdateCorrection(part.id, corr.id, status)}
-              onDelete={() => onDeleteCorrection(part.id, corr.id)}
-              onAssign={(who) => onAssignCorrection(part.id, corr.id, who)}
-              onMove={(direction) => onMoveCorrection(part.id, corr.id, direction)}
-              canMoveUp={index > 0}
-              canMoveDown={index < visible.length - 1}
-            />
-          ))}
+          {isAdmin ? (
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              modifiers={[restrictToVerticalAxis, restrictToParentElement]}
+              onDragEnd={handleDragEnd}
+            >
+              <SortableContext items={visible.map(c => c.id)} strategy={verticalListSortingStrategy}>
+                <div>
+                  {visible.map(corr => (
+                    <SortableRow
+                      key={corr.id}
+                      correction={corr}
+                      change={changes[corr.id]}
+                      onUpdate={(status) => onUpdateCorrection(part.id, corr.id, status)}
+                      onDelete={() => onDeleteCorrection(part.id, corr.id)}
+                      onAssign={(who) => onAssignCorrection(part.id, corr.id, who)}
+                    />
+                  ))}
+                </div>
+              </SortableContext>
+            </DndContext>
+          ) : (
+            visible.map(corr => (
+              <CorrectionItem
+                key={corr.id}
+                correction={corr}
+                isAdmin={false}
+                change={changes[corr.id]}
+                onUpdate={() => {}}
+                onDelete={() => {}}
+              />
+            ))
+          )}
 
           {isAdmin && (
             <form onSubmit={handleAdd} className="mt-2 flex flex-col gap-3">

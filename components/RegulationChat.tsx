@@ -257,7 +257,8 @@ export default function RegulationChat() {
       )}
 
       <div className="mt-6 space-y-6" aria-live="polite">
-        {items.map(item => (
+        {/* La última consulta va arriba, justo bajo el cuadro de pregunta, para no tener que bajar. */}
+        {[...items].reverse().map(item => (
           <article key={item.id} className="space-y-2">
             <p className="rounded-2xl bg-accent/10 px-3 py-2 text-sm font-medium text-ink">{item.question}</p>
             {!item.result && !item.error ? (
