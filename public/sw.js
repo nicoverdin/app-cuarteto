@@ -1,11 +1,11 @@
 // Service worker mínimo: la app abre sin conexión.
 // - /_next/static (con hash en el nombre): cache-first.
 // - Iconos, manifests y fuentes (sin hash): stale-while-revalidate, para que los nuevos lleguen.
-// - Navegación: red primero; si falla, la última página cacheada de esa misma ruta.
+// - Navegación: red primero (máx. 4 s si hay copia); si falla o tarda, la última página cacheada de esa misma ruta.
 // Los datos de Supabase no pasan por aquí: la app guarda su propia copia local (localStorage) y,
 // al abrir sin red, prefiere esa copia si es más reciente que el HTML cacheado.
 // Sube la versión al cambiar la estrategia: al activarse se borran las cachés antiguas.
-const CACHE = 'cuarteto-v2';
+const CACHE = 'cuarteto-v3';
 
 self.addEventListener('install', () => self.skipWaiting());
 
@@ -24,10 +24,20 @@ const pageKey = url => {
   return url.origin + url.pathname + (coach ? '?entrenador=nico' : '');
 };
 
+// Tope de entradas /_next/static: cada despliegue crea ficheros nuevos y los antiguos no se reutilizan.
+const MAX_STATIC = 80;
+const trimStatic = c =>
+  c.keys().then(reqs => {
+    const old = reqs.filter(r => new URL(r.url).pathname.startsWith('/_next/static'));
+    return Promise.all(old.slice(0, Math.max(0, old.length - MAX_STATIC)).map(r => c.delete(r)));
+  });
+
 const store = (key, res) => {
   if (!res.ok) return; // nunca se cachean errores ni redirecciones
   const copy = res.clone();
-  caches.open(CACHE).then(c => c.put(key, copy)).catch(() => {});
+  caches.open(CACHE)
+    .then(c => c.put(key, copy).then(() => (typeof key !== 'string' ? trimStatic(c) : null)))
+    .catch(() => {});
 };
 
 self.addEventListener('fetch', event => {
@@ -38,15 +48,19 @@ self.addEventListener('fetch', event => {
   if (request.mode === 'navigate') {
     const key = pageKey(url);
     const coach = url.searchParams.get('entrenador') === 'nico';
+    const fallback = () =>
+      caches.match(key).then(hit => hit || caches.match(url.origin + '/' + (coach ? '?entrenador=nico' : '')));
+    const network = fetch(request).then(res => {
+      store(key, res);
+      return res;
+    });
+    // Red lenta: tras 4 s se sirve la copia (si la hay); si no, se sigue esperando a la red.
+    const slow = new Promise(resolve =>
+      setTimeout(() => fallback().then(hit => hit && resolve(hit)).catch(() => {}), 4000)
+    );
     event.respondWith(
-      fetch(request)
-        .then(res => {
-          store(key, res);
-          return res;
-        })
-        .catch(() =>
-          caches.match(key).then(hit => hit || caches.match(url.origin + '/' + (coach ? '?entrenador=nico' : '')))
-        )
+      Promise.race([network, slow])
+        .catch(() => fallback())
         .then(res => res || Response.error())
     );
     return;

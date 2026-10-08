@@ -148,3 +148,24 @@ export function inverseMutation(before: RoutinePart[], after: RoutinePart[]): Mu
     return { ...part, corrections: list };
   });
 }
+
+/** Reconstruye el estado visible: último estado confirmado + mutaciones aún pendientes, en orden. */
+export function rebuildFromConfirmed(confirmed: RoutinePart[], pending: Mutation[]): RoutinePart[] {
+  return pending.reduce((state, mutate) => mutate(state), confirmed);
+}
+
+/**
+ * Milisegundos de una fecha del servidor. Acepta ISO y el formato de Postgres/Realtime con espacio
+ * y offset corto ("2026-10-08 10:34:30+00"). NaN si no se puede interpretar.
+ */
+export function parseServerDate(s: string): number {
+  const norm = s.trim().replace(/^(\d{4}-\d{2}-\d{2}) /, '$1T').replace(/([+-]\d{2})$/, '$1:00');
+  return Date.parse(norm);
+}
+
+/** ¿La fecha `a` es anterior o igual a `b`? Si alguna no se puede interpretar, se considera que no. */
+export function isOlderOrEqual(a: string, b: string): boolean {
+  const x = parseServerDate(a);
+  const y = parseServerDate(b);
+  return !Number.isNaN(x) && !Number.isNaN(y) && x <= y;
+}

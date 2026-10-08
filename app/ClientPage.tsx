@@ -11,9 +11,9 @@ import TodayView from '../components/TodayView';
 import WeeklyProgress from '../components/WeeklyProgress';
 import { isFor, useAthlete } from '../lib/athletes';
 import { MainProgressBar, StatusLegend } from '../components/ProgressCharts';
-import { supabase, fetchRoutine } from '../lib/supabase';
+import { supabase, fetchRoutine, timeoutSignal } from '../lib/supabase';
 import { diffAgainst, getSeen, getServerSeen, markSeen, reloadSeenBaseline, subscribeSeen } from '../lib/changes';
-import { initialData, inverseMutation, isValidRoutine, newCorrectionId, readCachedRoutine, readCachedUpdatedAt, writeCachedRoutine, type Mutation } from '../lib/routine';
+import { initialData, inverseMutation, isOlderOrEqual, isValidRoutine, newCorrectionId, parseServerDate, rebuildFromConfirmed, readCachedRoutine, readCachedUpdatedAt, writeCachedRoutine, type Mutation } from '../lib/routine';
 
 interface Toast {
   message: string;
@@ -31,13 +31,6 @@ interface Props {
 
 const VIEWS = [['rutina', 'Rutina'], ['hoy', 'Para trabajar']] as const;
 type View = (typeof VIEWS)[number][0];
-
-// ¿La fecha `a` es anterior o igual a `b`? Si alguna no se puede interpretar, se considera que no.
-const isOlderOrEqual = (a: string, b: string) => {
-  const x = Date.parse(a);
-  const y = Date.parse(b);
-  return !Number.isNaN(x) && !Number.isNaN(y) && x <= y;
-};
 
 function ToastBox({ toast }: { toast: Toast }) {
   return (
@@ -82,6 +75,8 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
   const epochRef = useRef(0); // cambia con cada guardado: invalida lecturas iniciadas antes
   const staleRef = useRef(false); // llegó un dato del servidor mientras se guardaba: se relee al terminar
   const queueRef = useRef<Promise<void>>(Promise.resolve());
+  const confirmedRef = useRef(routine); // último estado confirmado por el servidor (dato leído o último guardado)
+  const pendingMutsRef = useRef<{ mutate: Mutation }[]>([]); // mutaciones en cola, en orden
   const freshRef = useRef(!!initialRoutine); // ¿lo que se ve viene del servidor (no de la copia local)?
   const loadRef = useRef<((silent: boolean) => Promise<void>) | null>(null);
 
@@ -132,6 +127,7 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
     freshRef.current = true;
     const current = updatedAtRef.current;
     if (at && current && isOlderOrEqual(at, current)) return;
+    confirmedRef.current = data;
     commit(data);
     setMeta(at);
     writeCachedRoutine(data, at);
@@ -146,15 +142,21 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
     const load = async (silent: boolean) => {
       const epoch = epochRef.current;
       try {
-        const row = await fetchRoutine(client);
+        const row = await fetchRoutine(client, timeoutSignal());
         // Un fallo de red/permisos NUNCA debe sobrescribir los datos guardados.
         if (epoch !== epochRef.current) {
           // Hubo guardados mientras se leía: el resultado puede ser anterior; se relee al terminar.
           staleRef.current = true;
+          if (pendingRef.current === 0) {
+            // Nadie más releerá (no hay guardados que terminen): se relee ya, como hace settle().
+            staleRef.current = false;
+            setTimeout(() => loadRef.current?.(true), 0);
+          }
         } else if (row) {
           applyServer(row.data, row.updatedAt);
         } else if (!silent) {
           // La BD está realmente vacía: usamos el respaldo y solo el entrenador lo persiste.
+          confirmedRef.current = initialData;
           commit(initialData);
           if (isCoachUrl()) {
             const { error } = await client.from('disco_cuarteto').upsert({ id: 1, data: initialData }).select('id');
@@ -172,6 +174,7 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
           setIsOffline(true);
           if (cached && cachedIsNewer && pendingRef.current === 0) {
             freshRef.current = false;
+            confirmedRef.current = cached;
             commit(cached);
             setMeta(cachedAt);
           }
@@ -179,6 +182,7 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
         }
         if (cached) {
           freshRef.current = false;
+          confirmedRef.current = cached;
           commit(cached);
           setMeta(cachedAt);
           setIsOffline(true);
@@ -208,7 +212,10 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
         { event: 'UPDATE', schema: 'public', table: 'disco_cuarteto', filter: 'id=eq.1' },
         payload => {
           const row = payload.new as { data?: unknown; updated_at?: string | null };
-          if (isValidRoutine(row.data)) applyServer(row.data, row.updated_at ?? null);
+          // Realtime trae la fecha en formato Postgres ("... 10:34:30+00"): se normaliza a ISO.
+          const ms = row.updated_at ? parseServerDate(row.updated_at) : NaN;
+          const at = Number.isNaN(ms) ? null : new Date(ms).toISOString();
+          if (isValidRoutine(row.data)) applyServer(row.data, at);
         }
       )
       .subscribe();
@@ -230,27 +237,38 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
 
   // Escribe en la BD aplicando `mutate` sobre la última versión leída. Si la columna updated_at existe, la
   // escritura es condicional a que nadie haya guardado entretanto (se reintenta); la escritura debe afectar a 1 fila.
+  // Aplica el timeout (10 s) a una escritura: una red mala falla (y se revierte) en vez de colgar la cola.
+  const withTimeout = <T extends { abortSignal: (s: AbortSignal) => T }>(q: T): T => {
+    const signal = timeoutSignal();
+    return signal ? q.abortSignal(signal) : q;
+  };
+
   const persist = async (client: NonNullable<typeof supabase>, mutate: Mutation, fallback: RoutinePart[]) => {
     for (let attempt = 0; attempt < 3; attempt++) {
-      const row = await fetchRoutine(client);
+      const row = await fetchRoutine(client, timeoutSignal());
       const base = row?.data ?? fallback;
       const next = mutate(base);
 
       if (!row) {
         // BD vacía: se crea la fila.
-        const { data, error } = await client.from('disco_cuarteto').upsert({ id: 1, data: next }).select('id');
-        if (error) throw error;
-        if (data?.length !== 1) throw new Error('No se guardó ninguna fila');
-        return { base, next, savedAt: new Date().toISOString() };
+        const upsert = (cols: string) =>
+          withTimeout(client.from('disco_cuarteto').upsert({ id: 1, data: next }).select(cols));
+        let res = await upsert('id, updated_at');
+        if (res.error && (res.error.code === '42703' || /updated_at/.test(res.error.message))) res = await upsert('id');
+        if (res.error) throw res.error;
+        if (res.data?.length !== 1) throw new Error('No se guardó ninguna fila');
+        const saved = (res.data[0] as unknown as { updated_at?: string }).updated_at;
+        return { base, next, savedAt: saved ?? null };
       }
 
       let query = client.from('disco_cuarteto').update({ data: next }).eq('id', 1);
       if (row.updatedAt) query = query.eq('updated_at', row.updatedAt);
-      const { data, error } = await query.select(row.updatedAt ? 'id, updated_at' : 'id');
+      const { data, error } = await withTimeout(query.select(row.updatedAt ? 'id, updated_at' : 'id'));
       if (error) throw error;
       if (data?.length === 1) {
+        // Solo se usa la fecha del servidor: el reloj del cliente no sirve para comparar con ella.
         const saved = (data[0] as unknown as { updated_at?: string }).updated_at;
-        return { base, next, savedAt: saved ?? new Date().toISOString() };
+        return { base, next, savedAt: saved ?? null };
       }
       if (!row.updatedAt) break; // sin condición de versión, 0 filas = permisos o fila inexistente
     }
@@ -275,32 +293,47 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
     if (!isAdmin || !supabase) return;
     const client = supabase;
 
+    const entry = { mutate };
+    pendingMutsRef.current.push(entry);
     pendingRef.current++;
     epochRef.current++;
     const task = async () => {
+      let result: Awaited<ReturnType<typeof persist>> | null = null;
       try {
-        const { base, next, savedAt } = await persist(client, mutate, before);
-        pendingRef.current--;
-        epochRef.current++;
-        setMeta(savedAt);
-        writeCachedRoutine(next, savedAt);
-        if (pendingRef.current === 0) commit(next); // la versión guardada incluye lo de otros dispositivos
-        showToast({
-          message: okMessage,
-          kind: 'ok',
-          action: undoable
-            ? { label: 'Deshacer', run: () => { setToast(null); applyChange(inverseMutation(base, next), 'Cambio deshecho'); } }
-            : undefined,
-        });
+        result = await persist(client, mutate, before);
       } catch {
-        pendingRef.current--;
-        epochRef.current++;
-        commit(inverseMutation(before, after)(liveRef.current));
-        showToast({ message: 'No se pudo guardar. Se ha revertido el cambio.', kind: 'error' });
+        result = null;
       }
-      settle();
+      pendingRef.current--;
+      epochRef.current++;
+      pendingMutsRef.current = pendingMutsRef.current.filter(e => e !== entry);
+      try {
+        if (result) {
+          const { base, next, savedAt } = result;
+          confirmedRef.current = next;
+          if (savedAt) setMeta(savedAt);
+          writeCachedRoutine(next, savedAt);
+          if (pendingRef.current === 0) commit(next); // la versión guardada incluye lo de otros dispositivos
+          showToast({
+            message: okMessage,
+            kind: 'ok',
+            action: undoable
+              ? { label: 'Deshacer', run: () => { setToast(null); applyChange(inverseMutation(base, next), 'Cambio deshecho'); } }
+              : undefined,
+          });
+        } else {
+          // Estado confirmado + mutaciones aún en cola: no pierde cambios pendientes ni recupera estados nunca guardados.
+          commit(rebuildFromConfirmed(confirmedRef.current, pendingMutsRef.current.map(e => e.mutate)));
+          staleRef.current = true; // se relee al terminar por si el servidor tiene algo más
+          showToast({ message: 'No se pudo guardar. Se ha revertido el cambio.', kind: 'error' });
+        }
+      } catch {
+        /* un fallo al actualizar la vista no debe bloquear la cola */
+      } finally {
+        settle();
+      }
     };
-    queueRef.current = queueRef.current.then(task);
+    queueRef.current = queueRef.current.then(task).catch(() => {});
   };
 
   const mapPart = (partId: string, fn: (p: RoutinePart) => RoutinePart): Mutation =>
@@ -493,7 +526,7 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
             </button>
           ))}
         </div>
-        <div role="tabpanel" id={`${tabsId}-panel`} aria-labelledby={`${tabsId}-${view}`}>
+        <div role="tabpanel" tabIndex={0} id={`${tabsId}-panel`} aria-labelledby={`${tabsId}-${view}`}>
         {view === 'hoy' ? (
           <TodayView
             routine={routine}

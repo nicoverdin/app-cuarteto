@@ -1,7 +1,7 @@
 // Pruebas de la mutación inversa (rollback/deshacer): node:test + tsx.   npx tsx --test scripts/test-routine.ts
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { inverseMutation } from '../lib/routine';
+import { inverseMutation, isOlderOrEqual, parseServerDate, rebuildFromConfirmed, type Mutation } from '../lib/routine';
 import type { RoutinePart } from '../types';
 
 const c = (id: string, status: 'red' | 'yellow' | 'green' | 'pink' = 'red') => ({ id, text: id, status });
@@ -33,4 +33,37 @@ test('deshacer un cambio de estado restaura solo esa corrección', () => {
 test('deshacer un reordenado recupera el orden anterior', () => {
   const r = inverseMutation(part('a', 'b', 'c'), part('c', 'a', 'b'))(part('c', 'a', 'b'));
   assert.deepEqual(ids(r), ['a', 'b', 'c']);
+});
+
+// Simula la cola: estado visible optimista + confirmado + mutaciones pendientes, como en ClientPage.
+const setStatus = (status: 'red' | 'yellow' | 'green' | 'pink'): Mutation => r =>
+  r.map(p => ({ ...p, corrections: p.corrections.map(x => (x.id === 'a' ? { ...x, status } : x)) }));
+const status = (r: RoutinePart[]) => r[0].corrections[0].status;
+
+test('A→B→C con ambos guardados fallando vuelve al estado confirmado A', () => {
+  const confirmed = part('a'); // rojo
+  const muts = [setStatus('yellow'), setStatus('green')];
+  assert.equal(status(rebuildFromConfirmed(confirmed, muts)), 'green'); // visible optimista
+  // falla el primero: queda el segundo aún en cola
+  assert.equal(status(rebuildFromConfirmed(confirmed, muts.slice(1))), 'green');
+  // falla también el segundo: nada pendiente
+  assert.equal(status(rebuildFromConfirmed(confirmed, [])), 'red');
+});
+
+test('éxito del primero y fallo del segundo deja el valor guardado del primero', () => {
+  const confirmed = setStatus('yellow')(part('a')); // el primero se guardó
+  assert.equal(status(rebuildFromConfirmed(confirmed, [])), 'yellow');
+});
+
+test('fallo del primero con el segundo pendiente conserva el segundo', () => {
+  const confirmed = part('a');
+  assert.equal(status(rebuildFromConfirmed(confirmed, [setStatus('pink')])), 'pink');
+});
+
+test('fechas de Postgres con espacio y offset corto se normalizan', () => {
+  assert.equal(parseServerDate('2026-10-08 10:34:30+00'), Date.parse('2026-10-08T10:34:30+00:00'));
+  assert.equal(parseServerDate('2026-10-08T10:34:30.123Z'), Date.parse('2026-10-08T10:34:30.123Z'));
+  assert.ok(Number.isNaN(parseServerDate('basura')));
+  assert.equal(isOlderOrEqual('2026-10-08 10:34:30+00', '2026-10-08T10:34:31Z'), true);
+  assert.equal(isOlderOrEqual('basura', '2026-10-08T10:34:31Z'), false);
 });

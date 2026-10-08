@@ -100,7 +100,7 @@ export interface Summary {
 
 export function summarize(allScores: readonly Score[], athletes: readonly string[], catalog: readonly TechElement[] = CATALOG): Summary {
   // Una fila inconsistente en la base no debe tumbar la página: se ignora y se cuenta.
-  const scores = allScores.filter(s => validateScore(s) === null);
+  const scores = allScores.filter(s => validateScore(s, athletes) === null);
   const elements: Record<string, ElementSummary> = {};
   const athleteTotals: Record<string, number> = Object.fromEntries(athletes.map(a => [a, 0]));
   let technicalTotal = 0;
@@ -139,10 +139,11 @@ export function summarize(allScores: readonly Score[], athletes: readonly string
   return { elements, technicalTotal, athleteTotals, ignored: allScores.length - scores.length };
 }
 
-/** ¿La puntuación es válida contra el catálogo? Devuelve el motivo si no. */
-export function validateScore(s: Score): string | null {
+/** ¿La puntuación es válida contra el catálogo (y, si se pasan, las patinadoras conocidas)? Devuelve el motivo si no. */
+export function validateScore(s: Score, athletes?: readonly string[]): string | null {
   const el = getElement(s.elemento);
   if (!el) return `Elemento desconocido: ${s.elemento}`;
+  if (athletes && s.atleta !== null && !athletes.includes(s.atleta)) return `Patinadora desconocida: ${s.atleta}`;
   try {
     if (s.nivel !== null) assertLevel(el, s.nivel);
     else if (s.atleta !== null) return 'Una patinadora necesita nivel';

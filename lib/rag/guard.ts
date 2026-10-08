@@ -5,6 +5,7 @@ const DAY = 24 * HOUR;
 const perIp = new Map<string, number[]>();
 let dayStart = Date.now();
 let dayCount = 0;
+let dayId = 0; // cambia al reiniciarse el cupo diario
 
 const num = (v: string | undefined, d: number) => (v && Number.isFinite(+v) && +v > 0 ? +v : d);
 
@@ -28,11 +29,13 @@ export function allowRequest(ip: string, now = Date.now()): boolean {
   if (now - dayStart > DAY) {
     dayStart = now;
     dayCount = 0;
+    dayId++;
   }
   const recent = (perIp.get(ip) ?? []).filter(t => now - t < HOUR);
   if (recent.length >= perHour || dayCount >= perDay) {
     perIp.delete(ip);
-    perIp.set(ip, recent); // reinsertar mantiene el orden por actividad reciente
+    if (recent.length) perIp.set(ip, recent); // reinsertar mantiene el orden por actividad reciente
+    evict(now);
     return false;
   }
   recent.push(now);
@@ -43,11 +46,15 @@ export function allowRequest(ip: string, now = Date.now()): boolean {
   return true;
 }
 
+/** Identificador del cupo diario vigente: se guarda al reservar para devolver solo en el mismo día. */
+export const currentDay = () => dayId;
+
 /** Devuelve la consulta consumida por allowRequest (p. ej. si falla por un error nuestro). */
-export function refundRequest(ip: string) {
+export function refundRequest(ip: string, day = dayId) {
   const list = perIp.get(ip);
   if (list?.length) list.pop();
-  if (dayCount > 0) dayCount--;
+  if (list && !list.length) perIp.delete(ip);
+  if (day === dayId && dayCount > 0) dayCount--;
 }
 
 /**
@@ -85,6 +92,7 @@ const FAIL_WINDOW = 15 * 60_000;
 const MAX_FAILS = 10;
 const fails = new Map<string, number[]>();
 
+/** true si el cliente acumula demasiados códigos incorrectos (no se anota nada más mientras tanto). */
 export function authBlocked(key: string, now = Date.now()): boolean {
   const recent = (fails.get(key) ?? []).filter(t => now - t < FAIL_WINDOW);
   if (recent.length) fails.set(key, recent);
@@ -135,4 +143,5 @@ export function resetGuards() {
   cache.clear();
   dayCount = 0;
   dayStart = Date.now();
+  dayId = 0;
 }

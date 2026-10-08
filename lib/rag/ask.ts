@@ -24,59 +24,81 @@ const REWRITE_MODEL = () => process.env.REGLAMENTO_REWRITE_MODEL || 'claude-haik
 
 export interface AskDeps {
   /** Reformula la pregunta en inglés técnico; si falla, se busca con la pregunta original. */
-  rewrite: (question: string) => Promise<string>;
-  generate: (mode: Exclude<Mode, 'buscar'>, question: string, hits: Hit[]) => Promise<BetaMessage>;
+  rewrite: (question: string, signal?: AbortSignal) => Promise<string>;
+  generate: (
+    mode: Exclude<Mode, 'buscar'>,
+    question: string,
+    hits: Hit[],
+    signal?: AbortSignal
+  ) => Promise<BetaMessage>;
 }
 
-export function createClient() {
+export function createClient(opts: { timeout?: number; maxRetries?: number } = {}) {
   // Lee ANTHROPIC_API_KEY. Las claves no asociadas a un workspace necesitan indicar cuál usar.
   const workspace = process.env.ANTHROPIC_WORKSPACE_ID;
   // Sin timeout el SDK espera 10 min: se acota y se reintenta una sola vez.
   return new Anthropic({
-    timeout: 45_000,
-    maxRetries: 1,
+    timeout: opts.timeout ?? 45_000,
+    maxRetries: opts.maxRetries ?? 1,
     ...(workspace ? { defaultHeaders: { 'anthropic-workspace-id': workspace } } : {}),
   });
 }
 
 export const defaultDeps: AskDeps = {
-  async rewrite(question) {
-    const res = await createClient().messages.create({
-      model: REWRITE_MODEL(),
-      max_tokens: 120,
-      system: REWRITE_SYSTEM,
-      messages: [{ role: 'user', content: question }],
-    });
+  async rewrite(question, signal) {
+    // Paso opcional: timeout corto y sin reintentos (si falla se busca con la pregunta original).
+    const res = await createClient({
+      timeout: 10_000,
+      maxRetries: 0,
+    }).messages.create(
+      {
+        model: REWRITE_MODEL(),
+        max_tokens: 120,
+        system: REWRITE_SYSTEM,
+        messages: [{ role: 'user', content: question }],
+      },
+      { signal }
+    );
     const block = res.content.find(b => b.type === 'text');
     return block && block.type === 'text' ? block.text.trim() : '';
   },
 
-  async generate(mode, question, hits) {
+  async generate(mode, question, hits, signal) {
     const model = MODEL();
     // Cada fragmento va como documento con citas activadas: la respuesta llega con referencias
     // a los fragmentos exactos (y al texto literal) en los que se apoya.
     const documents = hits.map(({ chunk }) => ({
       type: 'document' as const,
-      source: { type: 'text' as const, media_type: 'text/plain' as const, data: chunk.text },
+      source: {
+        type: 'text' as const,
+        media_type: 'text/plain' as const,
+        data: chunk.text,
+      },
       title: `${chunkLabel(chunk)} (${pagesLabel(chunk)})`,
       citations: { enabled: true },
     }));
-    return createClient().beta.messages.create({
-      model,
-      max_tokens: mode === 'breve' ? 1500 : 6000,
-      system: SYSTEM[mode],
-      output_config: { effort: mode === 'breve' ? 'low' : 'medium' },
-      // Ante un rechazo de seguridad, la API reintenta en el modelo de reserva dentro de la misma llamada.
-      ...(/^claude-(opus-5|sonnet-5-5|fable-5)/.test(model)
-        ? { betas: ['server-side-fallback-2026-07-01' as const], fallbacks: 'default' as const }
-        : {}),
-      messages: [
-        {
-          role: 'user',
-          content: [...documents, { type: 'text', text: `Pregunta: ${question}` }],
-        },
-      ],
-    });
+    return createClient().beta.messages.create(
+      {
+        model,
+        max_tokens: mode === 'breve' ? 1500 : 6000,
+        system: SYSTEM[mode],
+        output_config: { effort: mode === 'breve' ? 'low' : 'medium' },
+        // Ante un rechazo de seguridad, la API reintenta en el modelo de reserva dentro de la misma llamada.
+        ...(/^claude-(opus-5|sonnet-5-5|fable-5)/.test(model)
+          ? {
+              betas: ['server-side-fallback-2026-07-01' as const],
+              fallbacks: 'default' as const,
+            }
+          : {}),
+        messages: [
+          {
+            role: 'user',
+            content: [...documents, { type: 'text', text: `Pregunta: ${question}` }],
+          },
+        ],
+      },
+      { signal }
+    );
   },
 };
 
@@ -120,7 +142,12 @@ export function parseAnswer(message: BetaMessage, hits: Hit[]) {
   return { segments, sources };
 }
 
-export async function ask(question: string, mode: Mode, deps: AskDeps = defaultDeps): Promise<AskResult> {
+export async function ask(
+  question: string,
+  mode: Mode,
+  deps: AskDeps = defaultDeps,
+  signal?: AbortSignal
+): Promise<AskResult> {
   // Carga el índice primero: si falta, no se gasta la reformulación.
   getStore();
 
@@ -129,7 +156,7 @@ export async function ask(question: string, mode: Mode, deps: AskDeps = defaultD
   let english = '';
   if (mode !== 'buscar' && process.env.ANTHROPIC_API_KEY) {
     try {
-      english = await deps.rewrite(question);
+      english = await deps.rewrite(question, signal);
     } catch {
       /* se busca con la pregunta original */
     }
@@ -144,14 +171,20 @@ export async function ask(question: string, mode: Mode, deps: AskDeps = defaultD
   if (hits.length === 0) {
     return {
       mode,
-      answer: [{ text: 'No aparece en los fragmentos del reglamento consultados.', refs: [] }],
+      answer: [
+        {
+          text: 'No aparece en los fragmentos del reglamento consultados.',
+          refs: [],
+        },
+      ],
       sources: [],
       passages,
       retrieval: kind,
     };
   }
 
-  const message = await deps.generate(mode, question, hits);
+  signal?.throwIfAborted();
+  const message = await deps.generate(mode, question, hits, signal);
   const { segments, sources } = parseAnswer(message, hits);
   const text = segments.map(s => s.text).join('');
 

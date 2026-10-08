@@ -9,6 +9,7 @@ import {
   cacheKey,
   cacheSet,
   clientKey,
+  currentDay,
   inflight,
   recordAuthFailure,
   refundRequest,
@@ -17,11 +18,13 @@ import {
 import { MODES, type AskResult, type Mode } from '../../../lib/rag/types';
 
 export const dynamic = 'force-dynamic';
-// Tiempo máximo de la función: el cliente de Claude tarda como mucho ~45 s por intento (1 reintento).
+// Tiempo máximo de la función. La consulta tiene un presupuesto global (BUDGET_MS) que aborta las llamadas
+// a Claude (reformulación 10 s sin reintentos + generación 45 s con 1 reintento); queda margen hasta maxDuration.
 export const maxDuration = 100;
+const BUDGET_MS = 90_000;
 
 const MAX_QUESTION = 500;
-const MAX_BODY = 4096;
+const MAX_BODY = 8192;
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 
 // Comparación en tiempo constante: se comparan los hashes, que siempre miden lo mismo.
@@ -39,10 +42,13 @@ export async function POST(request: Request) {
     return json({ error: 'sin_codigo', message: 'La consulta no está disponible ahora mismo.' }, 503);
   }
   if (code) {
-    if (authBlocked(client)) {
-      return json({ error: 'limite', message: 'Demasiados intentos. Inténtalo de nuevo más tarde.' }, 429);
-    }
-    if (!sameCode(request.headers.get('x-access-code') ?? '', code)) {
+    // Primero se verifica el código: el correcto nunca se bloquea. Solo el incorrecto cuenta como fallo.
+    const sent = request.headers.get('x-access-code');
+    if (!sent) return json({ error: 'codigo', message: 'Introduce el código de acceso.' }, 401); // no suma fallo
+    if (!sameCode(sent, code)) {
+      if (authBlocked(client)) {
+        return json({ error: 'limite', message: 'Demasiados intentos. Inténtalo de nuevo más tarde.' }, 429);
+      }
       recordAuthFailure(client);
       return json({ error: 'codigo', message: 'Código de acceso incorrecto.' }, 401);
     }
@@ -51,10 +57,29 @@ export async function POST(request: Request) {
   const length = Number(request.headers.get('content-length') ?? 0);
   if (length > MAX_BODY) return json({ error: 'peticion', message: 'Petición demasiado grande.' }, 413);
 
+  // Lectura con tope de bytes (también con transfer-encoding chunked, sin content-length).
+  let raw = '';
+  try {
+    const reader = request.body?.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (reader) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_BODY) {
+        reader.cancel().catch(() => {});
+        return json({ error: 'peticion', message: 'Petición demasiado grande.' }, 413);
+      }
+      chunks.push(value);
+    }
+    raw = Buffer.concat(chunks).toString('utf8');
+  } catch {
+    return json({ error: 'peticion', message: 'Petición no válida.' }, 400);
+  }
+
   let body: { question?: unknown; mode?: unknown };
   try {
-    const raw = await request.text();
-    if (raw.length > MAX_BODY) return json({ error: 'peticion', message: 'Petición demasiado grande.' }, 413);
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('no es un objeto');
     body = parsed;
@@ -81,6 +106,8 @@ export async function POST(request: Request) {
   if (cached) return json({ ...cached, cached: true });
 
   // Pregunta idéntica ya en curso: se comparte su resultado sin gastar otra consulta.
+  const budget = AbortSignal.timeout(BUDGET_MS);
+  let reservedDay = 0;
   let promise = inflight.get(key) as Promise<AskResult> | undefined;
   const owner = !promise;
   if (!promise) {
@@ -88,12 +115,13 @@ export async function POST(request: Request) {
       if (!allowRequest(client)) {
         return json({ error: 'limite', message: 'Has hecho muchas consultas. Inténtalo de nuevo más tarde.' }, 429);
       }
+      reservedDay = currentDay();
       if (!acquireSlot()) {
-        refundRequest(client);
+        refundRequest(client, reservedDay);
         return json({ error: 'ocupado', message: 'Hay muchas consultas a la vez. Inténtalo en unos segundos.' }, 429);
       }
     }
-    promise = ask(question, mode).finally(() => {
+    promise = ask(question, mode, undefined, budget).finally(() => {
       inflight.delete(key);
       if (needsLlm) releaseSlot();
     });
@@ -102,7 +130,7 @@ export async function POST(request: Request) {
 
   // Devuelve la consulta si el fallo es nuestro (5xx), para que no gaste el cupo del cliente.
   const fail = (body: unknown, status: number) => {
-    if (owner && needsLlm && status >= 500) refundRequest(client);
+    if (owner && needsLlm && status >= 500) refundRequest(client, reservedDay);
     return json(body, status);
   };
 
@@ -114,6 +142,9 @@ export async function POST(request: Request) {
   } catch (e) {
     // Sin datos sensibles: solo el tipo, el estado HTTP y el mensaje del error.
     console.error('[reglamento]', e instanceof Error ? e.name : typeof e, (e as { status?: number }).status ?? '', e instanceof Error ? e.message.slice(0, 300) : '');
+    if (budget.aborted) {
+      return fail({ error: 'tiempo', message: 'La consulta ha tardado demasiado. Inténtalo de nuevo.' }, 504);
+    }
     if (e instanceof Anthropic.RateLimitError) {
       return fail({ error: 'ocupado', message: 'El servicio está saturado. Inténtalo en un momento.' }, 429);
     }

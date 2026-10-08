@@ -11,6 +11,10 @@ export const supabase: SupabaseClient | null = url.startsWith('http')
   ? createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
   : null;
 
+/** Señal que aborta tras `ms` (10 s por defecto); undefined si el navegador no soporta AbortSignal.timeout. */
+export const timeoutSignal = (ms = 10000): AbortSignal | undefined =>
+  typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(ms) : undefined;
+
 export interface RoutineRow {
   data: RoutinePart[];
   /** ISO de la última modificación; null si la tabla aún no tiene la columna updated_at. */

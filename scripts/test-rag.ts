@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs';
 import { test } from 'node:test';
 import type Anthropic from '@anthropic-ai/sdk';
 import { ask, parseAnswer, type AskDeps } from '../lib/rag/ask';
-import { acquireSlot, allowRequest, authBlocked, cacheGet, cacheSet, clientKey, recordAuthFailure, refundRequest, releaseSlot, resetGuards } from '../lib/rag/guard';
+import { acquireSlot, allowRequest, authBlocked, cacheGet, cacheSet, clientKey, currentDay, recordAuthFailure, refundRequest, releaseSlot, resetGuards } from '../lib/rag/guard';
 import { Bm25Index } from '../lib/rag/bm25';
 import { retrieve } from '../lib/rag/retrieve';
 import { queryTokens, tokenize } from '../lib/rag/text';
@@ -64,6 +64,27 @@ test('guard: devolución, concurrencia y fallos de acceso', () => {
   for (let i = 0; i < 10; i++) recordAuthFailure('x');
   assert.ok(authBlocked('x'));
   assert.equal(authBlocked('y'), false);
+  resetGuards();
+});
+
+test('guard: refundRequest no toca el cupo de otro día y no deja listas vacías', () => {
+  resetGuards();
+  process.env.REGLAMENTO_DAILY_LIMIT = '2';
+  const t0 = Date.now();
+  assert.ok(allowRequest('a', t0));
+  const day = currentDay();
+  assert.ok(allowRequest('b', t0 + 25 * 3_600_000)); // nuevo día: dayCount = 1
+  refundRequest('a', day); // reserva del día anterior: no resta
+  assert.ok(allowRequest('c', t0 + 25 * 3_600_000)); // dayCount = 2
+  assert.equal(allowRequest('d', t0 + 25 * 3_600_000), false);
+  delete process.env.REGLAMENTO_DAILY_LIMIT;
+  resetGuards();
+});
+
+test('guard: los fallos de acceso de otros no impiden el código correcto', () => {
+  resetGuards();
+  for (let i = 0; i < 15; i++) recordAuthFailure('directo');
+  assert.ok(authBlocked('directo')); // la ruta solo consulta esto tras un código incorrecto
   resetGuards();
 });
 
@@ -125,6 +146,16 @@ test('parseAnswer: numera fuentes por orden de aparición y descarta índices in
 const withDeps = (msg: BetaMessage): AskDeps => ({
   rewrite: async () => '',
   generate: async () => msg,
+});
+
+test('ask: con el presupuesto agotado no llama a generate', { skip: !hasData }, async () => {
+  delete process.env.ANTHROPIC_API_KEY;
+  const ctrl = new AbortController();
+  ctrl.abort();
+  let called = false;
+  const deps: AskDeps = { rewrite: async () => '', generate: async () => ((called = true), message([])) };
+  await assert.rejects(ask('¿Qué es el elemento canon?', 'breve', deps, ctrl.signal));
+  assert.equal(called, false);
 });
 
 test('ask: respuesta con citas no genera aviso', { skip: !hasData }, async () => {

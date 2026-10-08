@@ -140,6 +140,16 @@ export default function RegulationChat() {
   const submit = async (q: string, queryMode: Mode = mode) => {
     const text = q.trim();
     if (text.length < 3 || loading) return;
+    // Las cabeceras HTTP solo admiten ASCII: otro carácter haría fallar fetch con un TypeError.
+    if (code && !/^[\x20-\x7e]*$/.test(code)) {
+      setNeedsCode(true);
+      setItems(prev => [
+        ...prev,
+        { id: nextId.current++, question: text, mode: queryMode, error: 'El código solo puede tener caracteres ASCII.' },
+      ]);
+      setQuestion('');
+      return;
+    }
     const id = nextId.current++;
     const base: Item = { id, question: text, mode: queryMode };
     const controller = new AbortController();

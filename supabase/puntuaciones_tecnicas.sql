@@ -42,6 +42,17 @@ alter table public.sesiones_tecnicas drop constraint if exists sesiones_tecnicas
 alter table public.sesiones_tecnicas add constraint sesiones_tecnicas_elementos_ids
   check (array_position(elementos, null) is null and array_position(elementos, '') is null);
 
+-- Límites de tamaño (re-ejecutable). "not valid": no revisa las filas que ya existan (no falla si alguna se pasa),
+-- pero se aplica a toda inserción o modificación nueva.
+alter table public.puntuaciones_tecnicas drop constraint if exists puntuaciones_tecnicas_elemento_len;
+alter table public.puntuaciones_tecnicas add constraint puntuaciones_tecnicas_elemento_len check (char_length(elemento) <= 64) not valid;
+alter table public.puntuaciones_tecnicas drop constraint if exists puntuaciones_tecnicas_atleta_len;
+alter table public.puntuaciones_tecnicas add constraint puntuaciones_tecnicas_atleta_len check (char_length(atleta) <= 60) not valid;
+alter table public.puntuaciones_tecnicas drop constraint if exists puntuaciones_tecnicas_extras_len;
+alter table public.puntuaciones_tecnicas add constraint puntuaciones_tecnicas_extras_len check (cardinality(extras) <= 20) not valid;
+alter table public.sesiones_tecnicas drop constraint if exists sesiones_tecnicas_elementos_len;
+alter table public.sesiones_tecnicas add constraint sesiones_tecnicas_elementos_len check (cardinality(elementos) <= 50) not valid;
+
 -- Marca de última actualización -----------------------------------------------------------------
 create or replace function public.puntuaciones_tecnicas_touch()
 returns trigger

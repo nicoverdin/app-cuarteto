@@ -1,13 +1,14 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
-import { ChevronLeft, Plus, Trash2, Users, User, Info } from 'lucide-react';
+import { ChevronLeft, Plus, Trash2, Users, User, Info, X } from 'lucide-react';
 import { ATHLETES } from '../lib/athletes';
 import { supabase } from '../lib/supabase';
 import { CATALOG, CATALOG_SOURCE, QOE_VALUES, TechElement } from '../lib/technical/catalog';
 import { ElementValue, Score, summarize, validateScore } from '../lib/technical/score';
+import { createWriteQueue } from '../lib/technical/queue';
 import {
-  TechSession, createSession, deleteScores, deleteSession, isMissingColumn, isMissingTable, listSessions, loadScores, saveScore,
+  TechSession, createSession, deleteRows, deleteScores, deleteSession, isMissingColumn, isMissingTable, listSessions, loadScores, saveScore,
   updateSessionElements,
 } from '../lib/technical/store';
 
@@ -27,11 +28,10 @@ const today = () => {
 };
 
 const NO_SCORES: Score[] = [];
-const rowKey = (sid: string, elemento: string, atleta: string | null) => `${sid}|${elemento}|${atleta ?? ''}`;
 
 // text-base (16px): iOS hace zoom al enfocar campos con menos.
 const selectCls =
-  'w-full rounded-xl border border-line bg-surface px-2.5 py-2.5 text-base font-semibold text-ink disabled:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent';
+  'w-full rounded-xl border border-line bg-surface px-2.5 py-2.5 text-base font-semibold text-ink disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent';
 
 const levelText = (el: TechElement, i: number) => `${i === 0 ? 'Sin nivel' : el.levels[i].code} · ${el.levels[i].base}`;
 const qoeText = (q: number) => (q === 0 ? 'QOE 0' : `QOE ${signed(q)}`);
@@ -88,7 +88,11 @@ export default function TechnicalScoring() {
   // Sesión cuyas puntuaciones están cargadas; mientras no coincida con sessionId no se muestra ni se escribe nada.
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
-  const [ignored, setIgnored] = useState(0);
+  // Filas de la sesión que no cumplen el catálogo (se ignoran al calcular; el entrenador puede borrarlas).
+  const [invalid, setInvalid] = useState<Score[]>([]);
+  const [listError, setListError] = useState(false);
+  const [listKey, setListKey] = useState(0);
+  const [cleaning, setCleaning] = useState(false);
   const [loading, setLoading] = useState(!!supabase);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -105,17 +109,13 @@ export default function TechnicalScoring() {
   const sessionRef = useRef<string | null>(null);
   // Última versión confirmada en la base de la sesión vigente (para revertir solo la fila que falló).
   const confirmedRef = useRef<Score[]>([]);
-  // Cola de escrituras por sesión+elemento y contador de cambios por fila.
-  const chains = useRef(new Map<string, Promise<void>>());
-  const seqs = useRef(new Map<string, number>());
-
   const selectSession = useCallback((id: string | null) => {
     sessionRef.current = id;
     confirmedRef.current = [];
     setSessionId(id);
     setScores(NO_SCORES);
     setLoadedFor(null);
-    setIgnored(0);
+    setInvalid([]);
     setLoadError(null);
     setSaveError(null);
   }, []);
@@ -127,6 +127,19 @@ export default function TechnicalScoring() {
     else setSaveError('No se pudo guardar el cambio. Revisa la conexión e inténtalo de nuevo.');
   }, []);
 
+  // Cola de escrituras optimistas por fila (lib/technical/queue.ts).
+  const queueRef = useRef<ReturnType<typeof createWriteQueue<Score>> | null>(null);
+  const mutate: ReturnType<typeof createWriteQueue<Score>> = (...args) => {
+    queueRef.current ??= createWriteQueue<Score>({
+      getSession: () => sessionRef.current,
+      getConfirmed: () => confirmedRef.current,
+      setConfirmed: list => { confirmedRef.current = list; },
+      applyLocal: fn => { setSaveError(null); setScores(fn); },
+      onError: e => fail(e, 'save'),
+    });
+    return queueRef.current(...args);
+  };
+
   useEffect(() => {
     if (!supabase) return;
     let alive = true;
@@ -136,20 +149,24 @@ export default function TechnicalScoring() {
         setSessions(list);
         selectSession(list[0]?.id ?? null);
       })
-      .catch(e => alive && fail(e, 'load'))
+      .catch(e => {
+        if (!alive) return;
+        if (isMissingTable(e) || isMissingColumn(e)) fail(e, 'load');
+        else setListError(true);
+      })
       .finally(() => alive && setLoading(false));
     return () => { alive = false; };
-  }, [fail, selectSession]);
+  }, [fail, selectSession, listKey]);
 
   useEffect(() => {
     if (!supabase || !sessionId) return;
     let alive = true;
     loadScores(supabase, sessionId)
-      .then(({ scores: rows, ignored: n }) => {
+      .then(({ scores: rows, invalid: bad }) => {
         if (!alive) return;
         confirmedRef.current = rows;
         setScores(rows);
-        setIgnored(n);
+        setInvalid(bad);
         setLoadedFor(sessionId);
       })
       .catch(e => alive && fail(e, 'load'));
@@ -168,44 +185,12 @@ export default function TechnicalScoring() {
   const find = (elemento: string, atleta: string | null) =>
     shown.find(s => s.elemento === elemento && s.atleta === atleta);
 
-  // Escritura optimista de las filas (elemento, atletas) de la sesión `sid`:
-  //  · en cola por sesión+elemento, para que lleguen a la base en orden;
-  //  · si falla, solo se revierten esas filas (a lo último confirmado) y solo si nadie las ha vuelto a tocar;
-  //  · si la sesión activa cambió, no se toca la pantalla.
-  const mutate = (
-    sid: string, elemento: string, atletas: (string | null)[],
-    optimistic: (list: Score[]) => Score[], write: () => Promise<void>, confirm: (list: Score[]) => Score[]
-  ) => {
-    const live = () => sessionRef.current === sid;
-    if (live()) { setSaveError(null); setScores(optimistic); }
-    const mine = new Map<string, number>();
-    for (const a of atletas) {
-      const k = rowKey(sid, elemento, a);
-      const n = (seqs.current.get(k) ?? 0) + 1;
-      seqs.current.set(k, n);
-      mine.set(k, n);
-    }
-    const chainKey = `${sid}|${elemento}`;
-    const next = (chains.current.get(chainKey) ?? Promise.resolve()).then(write).then(
-      () => { if (live()) confirmedRef.current = confirm(confirmedRef.current); },
-      e => {
-        if (!live()) return;
-        const mineNow = atletas.filter(a => seqs.current.get(rowKey(sid, elemento, a)) === mine.get(rowKey(sid, elemento, a)));
-        const inSet = (s: Score) => s.elemento === elemento && mineNow.includes(s.atleta);
-        const back = confirmedRef.current.filter(inSet);
-        setScores(list => [...list.filter(s => !inSet(s)), ...back]);
-        fail(e, 'save');
-      }
-    );
-    chains.current.set(chainKey, next);
-  };
-
   const sameRow = (a: Score, b: Score) => a.elemento === b.elemento && a.atleta === b.atleta;
   const withRow = (list: Score[], next: Score) => [...list.filter(s => !sameRow(s, next)), next];
 
   const persist = (next: Score) => {
     const sid = sessionRef.current;
-    const reason = validateScore(next);
+    const reason = validateScore(next, ATHLETES);
     if (reason) { setSaveError(reason); return; }
     if (!supabase || !sid || !ready) return;
     const db = supabase;
@@ -288,6 +273,23 @@ export default function TechnicalScoring() {
     }
   };
 
+  // Borra las filas no válidas de la sesión (con confirmación) y recarga.
+  const cleanInvalid = async () => {
+    const sid = sessionRef.current;
+    if (!supabase || !sid || !ready || cleaning || invalid.length === 0) return;
+    if (!window.confirm(`¿Borrar ${invalid.length === 1 ? '1 fila no válida' : `${invalid.length} filas no válidas`} de esta sesión?`)) return;
+    setCleaning(true);
+    setSaveError(null);
+    try {
+      await deleteRows(supabase, sid, invalid);
+      if (sessionRef.current === sid) setReloadKey(k => k + 1);
+    } catch (e) {
+      if (sessionRef.current === sid) fail(e, 'save');
+    } finally {
+      setCleaning(false);
+    }
+  };
+
   const coachQuery = isAdmin ? '?entrenador=nico' : '';
 
   return (
@@ -358,13 +360,34 @@ export default function TechnicalScoring() {
         </p>
       )}
       {saveError && (
+        <div className="sticky top-[max(0.5rem,env(safe-area-inset-top))] z-20 mt-4">
+          <p role="alert" className="flex items-start gap-2 rounded-2xl border border-danger/40 bg-surface px-4 py-3 text-sm font-medium text-danger shadow-lg">
+            <span className="flex-1">{saveError}</span>
+            <button
+              type="button"
+              onClick={() => setSaveError(null)}
+              aria-label="Cerrar aviso"
+              className="-m-2 shrink-0 rounded-md p-2 focus-visible:outline-2 focus-visible:outline-danger"
+            >
+              <X className="w-4 h-4" aria-hidden="true" />
+            </button>
+          </p>
+        </div>
+      )}
+      {listError && (
         <p role="alert" className="mt-4 rounded-2xl border border-danger/40 bg-surface px-4 py-3 text-sm font-medium text-danger">
-          {saveError}
+          No se pudieron cargar las sesiones. Revisa la conexión e inténtalo de nuevo.{' '}
+          <button type="button" onClick={() => { setListError(false); setLoading(true); setListKey(k => k + 1); }} className="underline">
+            Reintentar
+          </button>
         </p>
       )}
-      {isAdmin && ignored > 0 && (
+      {isAdmin && invalid.length > 0 && (
         <p role="status" className="mt-4 text-xs text-ink-muted">
-          {ignored === 1 ? 'Se ignoró 1 fila' : `Se ignoraron ${ignored} filas`} de esta sesión con datos no válidos.
+          {invalid.length === 1 ? 'Se ignoró 1 fila' : `Se ignoraron ${invalid.length} filas`} de esta sesión con datos no válidos.{' '}
+          <button type="button" onClick={cleanInvalid} disabled={cleaning || !ready} className="font-semibold text-danger underline disabled:opacity-50">
+            Limpiar filas no válidas
+          </button>
         </p>
       )}
 
@@ -424,7 +447,7 @@ export default function TechnicalScoring() {
                     aria-pressed={on}
                     disabled={toggling}
                     onClick={() => toggleElement(el)}
-                    className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
+                    className={`min-h-11 rounded-full border px-3.5 text-xs font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
                       on ? 'border-accent bg-accent text-on-accent' : 'border-line bg-surface text-ink-soft'
                     }`}
                   >
@@ -453,10 +476,10 @@ export default function TechnicalScoring() {
                 <legend className="text-xs font-semibold text-ink-soft">Elementos que se puntúan</legend>
                 <div className="mt-1 flex flex-wrap gap-1.5">
                   {CATALOG.map(el => (
-                    <label key={el.id} className="flex items-center gap-2 rounded-lg bg-track px-2.5 py-2 text-xs font-semibold text-ink">
+                    <label key={el.id} className="flex min-h-11 items-center gap-2 rounded-lg bg-track px-3 text-xs font-semibold text-ink">
                       <input
                         type="checkbox"
-                        className="h-4 w-4 accent-[var(--accent)]"
+                        className="h-5 w-5 shrink-0 accent-[var(--accent)]"
                         checked={newElements.includes(el.id)}
                         onChange={() =>
                           setNewElements(cur => (cur.includes(el.id) ? cur.filter(id => id !== el.id) : [...cur, el.id]))
@@ -477,7 +500,7 @@ export default function TechnicalScoring() {
             </form>
           )}
 
-          {!loading && sessions.length === 0 && (
+          {!loading && !listError && sessions.length === 0 && (
             <p className="mt-3 text-sm text-ink-soft">
               {isAdmin ? 'Crea una sesión (competición o ensayo) para empezar a puntuar.' : 'Aún no hay sesiones puntuadas.'}
             </p>
@@ -564,10 +587,10 @@ export default function TechnicalScoring() {
                           {el.extras.map(x => {
                             const on = group?.extras.includes(x.id) ?? false;
                             return (
-                              <label key={x.id} className="flex items-center gap-2 rounded-lg bg-surface px-2.5 py-2 text-xs font-semibold text-ink">
+                              <label key={x.id} className="flex min-h-11 items-center gap-2 rounded-lg bg-surface px-3 text-xs font-semibold text-ink">
                                 <input
                                   type="checkbox"
-                                  className="h-4 w-4 accent-[var(--accent)]"
+                                  className="h-5 w-5 shrink-0 accent-[var(--accent)]"
                                   checked={on}
                                   onChange={() => {
                                     const cur = group ?? base;

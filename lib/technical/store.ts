@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { ATHLETES } from '../athletes';
 import { validateScore, type Score } from './score';
 
 export interface TechSession {
@@ -9,7 +10,7 @@ export interface TechSession {
   elementos: string[];
 }
 
-interface Row {
+export interface Row {
   elemento: string;
   atleta: string;
   nivel: number | null;
@@ -17,13 +18,29 @@ interface Row {
   extras: string[] | null;
 }
 
-const toScore = (r: Row): Score => ({
+export const toScore = (r: Row): Score => ({
   elemento: r.elemento,
   atleta: r.atleta === '' ? null : r.atleta,
   nivel: r.nivel,
   qoe: r.qoe,
   extras: r.extras ?? [],
 });
+
+/** Score → fila de la base ('' = grupo). */
+export const toDbRow = (sessionId: string, s: Score) => ({
+  sesion_id: sessionId, elemento: s.elemento, atleta: s.atleta ?? '', nivel: s.nivel, qoe: s.qoe, extras: s.extras,
+});
+
+/** Separa las filas válidas de las que no cumplen el catálogo ni las patinadoras conocidas. */
+export function splitRows(rows: Row[], athletes: readonly string[] = ATHLETES): { scores: Score[]; invalid: Score[] } {
+  const scores: Score[] = [];
+  const invalid: Score[] = [];
+  for (const r of rows) {
+    const s = toScore(r);
+    (validateScore(s, athletes) === null ? scores : invalid).push(s);
+  }
+  return { scores, invalid };
+}
 
 /** Postgres 42P01 / PostgREST PGRST205: las tablas aún no existen (SQL sin ejecutar). */
 export const isMissingTable = (e: { code?: string } | null) => e?.code === '42P01' || e?.code === 'PGRST205';
@@ -62,22 +79,17 @@ export async function deleteSession(db: SupabaseClient, id: string) {
 }
 
 /** Carga las puntuaciones de una sesión. Descarta (y cuenta) las filas que no cumplen el catálogo. */
-export async function loadScores(db: SupabaseClient, sessionId: string): Promise<{ scores: Score[]; ignored: number }> {
+export async function loadScores(db: SupabaseClient, sessionId: string): Promise<{ scores: Score[]; invalid: Score[] }> {
   const { data, error } = await db
     .from('puntuaciones_tecnicas')
     .select('elemento, atleta, nivel, qoe, extras')
     .eq('sesion_id', sessionId);
   if (error) throw error;
-  const all = (data as Row[]).map(toScore);
-  const scores = all.filter(s => validateScore(s) === null);
-  return { scores, ignored: all.length - scores.length };
+  return splitRows(data as Row[]);
 }
 
 export async function saveScore(db: SupabaseClient, sessionId: string, s: Score) {
-  const { error } = await db.from('puntuaciones_tecnicas').upsert(
-    { sesion_id: sessionId, elemento: s.elemento, atleta: s.atleta ?? '', nivel: s.nivel, qoe: s.qoe, extras: s.extras },
-    { onConflict: 'sesion_id,elemento,atleta' }
-  );
+  const { error } = await db.from('puntuaciones_tecnicas').upsert(toDbRow(sessionId, s), { onConflict: 'sesion_id,elemento,atleta' });
   if (error) throw error;
 }
 
@@ -87,4 +99,9 @@ export async function deleteScores(db: SupabaseClient, sessionId: string, elemen
   if (atleta !== undefined) q = q.eq('atleta', atleta ?? '');
   const { error } = await q;
   if (error) throw error;
+}
+
+/** Borra filas concretas (elemento + atleta) de la sesión; sirve para limpiar las no válidas. */
+export async function deleteRows(db: SupabaseClient, sessionId: string, rows: { elemento: string; atleta: string | null }[]) {
+  for (const r of rows) await deleteScores(db, sessionId, r.elemento, r.atleta);
 }

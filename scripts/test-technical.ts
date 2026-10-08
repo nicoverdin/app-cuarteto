@@ -2,6 +2,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CATALOG, getElement } from '../lib/technical/catalog';
+import { createWriteQueue } from '../lib/technical/queue';
+import { splitRows, toDbRow, toScore } from '../lib/technical/store';
 import { derivedGroupLevel, elementValue, summarize, validateScore, type Score } from '../lib/technical/score';
 
 const el = (id: string) => getElement(id)!;
@@ -143,4 +145,100 @@ test('summarize: ignora filas inválidas sin lanzar y las cuenta', () => {
   assert.equal(r.elements.traveling.group, null);
   assert.equal(r.elements.cluster.group?.total, 3.5);
   assert.equal(r.technicalTotal, 3.5);
+});
+
+// --- validateScore con patinadoras conocidas ---
+test('validateScore: la patinadora debe estar en la lista; summarize cuenta las desconocidas como ignoradas', () => {
+  assert.equal(validateScore(s('line', 'A', 3), ATHLETES), null);
+  assert.ok(validateScore(s('line', 'Z', 3), ATHLETES));
+  assert.equal(validateScore(s('line', null, null), ATHLETES), null);
+  const r = summarize([s('line', 'Z', 3), s('line', 'A', 3)], ATHLETES);
+  assert.equal(r.ignored, 1);
+});
+
+// --- store: mapeo fila ↔ Score ---
+test('store: "" ↔ null (grupo), extras null y filtrado de filas inválidas', () => {
+  assert.deepEqual(toScore({ elemento: 'line', atleta: '', nivel: null, qoe: 1, extras: null }), s('line', null, null, 1));
+  assert.equal(toScore({ elemento: 'line', atleta: 'A', nivel: 2, qoe: 0, extras: [] }).atleta, 'A');
+  assert.deepEqual(toDbRow('sid', s('line', null, null, 1)), { sesion_id: 'sid', elemento: 'line', atleta: '', nivel: null, qoe: 1, extras: [] });
+  assert.equal(toDbRow('sid', s('line', 'A', 2)).atleta, 'A');
+  const { scores, invalid } = splitRows(
+    [
+      { elemento: 'line', atleta: '', nivel: 2, qoe: 0, extras: [] },
+      { elemento: 'line', atleta: 'A', nivel: 2, qoe: 0, extras: null },
+      { elemento: 'line', atleta: 'Z', nivel: 2, qoe: 0, extras: [] }, // atleta desconocida
+      { elemento: 'foo', atleta: '', nivel: 1, qoe: 0, extras: [] }, // elemento desconocido
+      { elemento: 'line', atleta: 'B', nivel: null, qoe: 0, extras: [] }, // sin nivel
+    ],
+    ATHLETES
+  );
+  assert.equal(scores.length, 2);
+  assert.deepEqual(invalid.map(x => x.atleta), ['Z', null, 'B']);
+});
+
+// --- cola de escrituras ---
+type Row = { elemento: string; atleta: string | null; v: number };
+const row = (atleta: string | null, v: number): Row => ({ elemento: 'line', atleta, v });
+const setRow = (list: Row[], next: Row) => [...list.filter(x => !(x.elemento === next.elemento && x.atleta === next.atleta)), next];
+
+function harness(initial: Row[] = []) {
+  const st = { session: 's1' as string | null, confirmed: initial, screen: initial, errors: 0 };
+  const mutate = createWriteQueue<Row>({
+    getSession: () => st.session,
+    getConfirmed: () => st.confirmed,
+    setConfirmed: l => { st.confirmed = l; },
+    applyLocal: fn => { st.screen = fn(st.screen); },
+    onError: () => { st.errors++; },
+  });
+  const edit = (next: Row, write: () => Promise<void>, sid = 's1') =>
+    mutate(sid, next.elemento, [next.atleta], l => setRow(l, next), write, l => setRow(l, next));
+  return { st, edit };
+}
+const ok = () => Promise.resolve();
+const ko = () => Promise.reject(new Error('fallo'));
+const val = (st: { screen: Row[] }, a: string | null) => st.screen.find(x => x.atleta === a)?.v;
+
+test('cola: A falla y B (misma fila) va detrás -> se revierte a lo confirmado solo si nadie la tocó después', async () => {
+  const { st, edit } = harness([row('A', 1)]);
+  const order: string[] = [];
+  const pa = edit(row('A', 2), async () => { order.push('A'); throw new Error('x'); });
+  const pb = edit(row('A', 3), async () => { order.push('B'); });
+  await Promise.all([pa, pb]);
+  assert.deepEqual(order, ['A', 'B']); // en orden
+  assert.equal(val(st, 'A'), 3); // B es más reciente: el fallo de A no pisa la pantalla
+  assert.equal(st.errors, 1);
+  assert.equal(st.confirmed.find(x => x.atleta === 'A')?.v, 3);
+});
+
+test('cola: A éxito y B falla -> vuelve al valor de A', async () => {
+  const { st, edit } = harness([row('A', 1)]);
+  const pa = edit(row('A', 2), ok);
+  const pb = edit(row('A', 3), ko);
+  assert.equal(val(st, 'A'), 3); // optimista
+  await Promise.all([pa, pb]);
+  assert.equal(val(st, 'A'), 2);
+  assert.equal(st.errors, 1);
+});
+
+test('cola: un fallo único revierte a lo confirmado y no toca otras filas', async () => {
+  const { st, edit } = harness([row('A', 1), row('B', 5)]);
+  await edit(row('A', 2), ko);
+  assert.equal(val(st, 'A'), 1);
+  assert.equal(val(st, 'B'), 5);
+});
+
+test('cola: cambio de sesión descarta lo pendiente (ni pantalla ni confirmado ni error)', async () => {
+  const { st, edit } = harness([row('A', 1)]);
+  const pa = edit(row('A', 2), ko);
+  const pb = edit(row('B', 7), ok);
+  st.session = 's2'; // el usuario cambia de sesión con escrituras en vuelo
+  st.screen = [row('A', 9)];
+  st.confirmed = [row('A', 9)];
+  await Promise.all([pa, pb]);
+  assert.deepEqual(st.screen, [row('A', 9)]);
+  assert.deepEqual(st.confirmed, [row('A', 9)]);
+  assert.equal(st.errors, 0);
+  // y una edición de una sesión que ya no es la vigente no toca la pantalla
+  await edit(row('A', 4), ok, 's1');
+  assert.deepEqual(st.screen, [row('A', 9)]);
 });

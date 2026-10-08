@@ -18,6 +18,15 @@ services:
       - VOYAGE_API_KEY=${VOYAGE_API_KEY:-}
       - REGLAMENTO_MODEL=${REGLAMENTO_MODEL:-}
       - REGLAMENTO_ACCESS_CODE=${REGLAMENTO_ACCESS_CODE:-}
+      - REGLAMENTO_REQUIRE_ACCESS_CODE=${REGLAMENTO_REQUIRE_ACCESS_CODE:-}
+      - REGLAMENTO_TRUSTED_PROXY_HOPS=${REGLAMENTO_TRUSTED_PROXY_HOPS:-}
+      - REGLAMENTO_MAX_CONCURRENT=${REGLAMENTO_MAX_CONCURRENT:-}
+      - REGLAMENTO_HOURLY_LIMIT=${REGLAMENTO_HOURLY_LIMIT:-}
+      - REGLAMENTO_DAILY_LIMIT=${REGLAMENTO_DAILY_LIMIT:-}
+      - REGLAMENTO_REWRITE_MODEL=${REGLAMENTO_REWRITE_MODEL:-}
+      - VOYAGE_MODEL=${VOYAGE_MODEL:-}
+      # Las variables vacías se tratan como no definidas (valores por defecto del código).
+      # REGLAMENTO_DATA_DIR no se pasa a propósito: el índice se monta en /app/data.
     volumes:
       # Índice del reglamento (generado con scripts/build-regulation-index.mjs; no está en git)
       - ./data:/app/data:ro
