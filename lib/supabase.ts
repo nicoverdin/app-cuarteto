@@ -6,9 +6,13 @@ const url = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 
 // Cliente seguro: es null si las variables no están (p. ej. en el build).
-// Sin sesión de usuario: la app no usa auth, así que no persistimos nada.
+// La sesión (solo del entrenador, ver lib/auth.ts) se guarda y renueva en el navegador; en el servidor el cliente
+// es anónimo y sin estado.
+const inBrowser = typeof window !== 'undefined';
 export const supabase: SupabaseClient | null = url.startsWith('http')
-  ? createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
+  ? createClient(url, key, {
+      auth: { persistSession: inBrowser, autoRefreshToken: inBrowser, detectSessionInUrl: false },
+    })
   : null;
 
 /**

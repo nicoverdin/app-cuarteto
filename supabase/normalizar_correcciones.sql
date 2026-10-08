@@ -89,16 +89,9 @@ alter table public.correcciones  enable row level security;
 create policy "lectura publica partes"        on public.partes        for select to anon, authenticated using (true);
 create policy "lectura publica correcciones"  on public.correcciones  for select to anon, authenticated using (true);
 
--- ESCRITURA: decisión pendiente. Sin una política de escritura, nadie puede modificar nada con la clave anónima.
--- Hoy la app no tiene login, así que la única forma de que el "modo entrenador" siga escribiendo sería abrir
--- la escritura a cualquiera que tenga la clave pública (es lo mismo que ocurre ahora con disco_cuarteto):
---
---   create policy "escritura abierta correcciones" on public.correcciones
---     for all to anon using (true) with check (true);
---
--- Más seguro: activar Supabase Auth, crear el usuario del entrenador y usar
---   for all to authenticated using (true) with check (true)
--- (o limitar a su uid: using (auth.uid() = '<uuid-del-entrenador>')).
+-- ESCRITURA: sin política de escritura nadie puede modificar nada con la clave anónima. Ejecuta después
+-- supabase/cerrar_escritura.sql, que da permiso de escritura solo al entrenador (cuenta de Supabase Auth) y
+-- cubre también estas tablas (partes y correcciones).
 
 -- 5. Tiempo real ---------------------------------------------------------------------------------
 alter publication supabase_realtime add table public.partes, public.correcciones;

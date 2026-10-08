@@ -1,9 +1,11 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { ChevronLeft, Plus, Trash2, Users, User, Info, X } from 'lucide-react';
 import { ATHLETES } from '../lib/athletes';
 import { supabase } from '../lib/supabase';
+import { useCoach, useWantsCoach } from '../lib/auth';
+import CoachBar from './CoachBar';
 import { CATALOG, CATALOG_SOURCE, QOE_VALUES, TechElement } from '../lib/technical/catalog';
 import { ElementValue, Score, summarize, validateScore } from '../lib/technical/score';
 import { createWriteQueue } from '../lib/technical/queue';
@@ -11,12 +13,6 @@ import {
   TechSession, createSession, deleteRows, deleteScores, deleteSession, isMissingColumn, isMissingTable, isTimeoutError, listSessions, loadScores, saveScore,
   updateSessionElements,
 } from '../lib/technical/store';
-
-const isCoachUrl = () =>
-  typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('entrenador') === 'nico';
-
-// subscribe estable (fuera del componente) para useSyncExternalStore.
-const subscribe = () => () => {};
 
 const fmt = (n: number) => n.toFixed(2).replace('.', ',');
 const signed = (n: number) => (n > 0 ? `+${n}` : `${n}`);
@@ -81,7 +77,9 @@ function Breakdown({ v }: { v: ElementValue }) {
 }
 
 export default function TechnicalScoring() {
-  const isAdmin = useSyncExternalStore(subscribe, isCoachUrl, () => false);
+  // Entrenador = sesión de Supabase verificada por la BD (lib/auth.ts).
+  const isAdmin = useCoach().status === 'coach';
+  const wantsCoach = useWantsCoach();
   const [sessions, setSessions] = useState<TechSession[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [scores, setScores] = useState<Score[]>(NO_SCORES);
@@ -313,7 +311,7 @@ export default function TechnicalScoring() {
     }
   };
 
-  const coachQuery = isAdmin ? '?entrenador=nico' : '';
+  const coachQuery = isAdmin || wantsCoach ? '?entrenador=nico' : '';
 
   return (
     <>
@@ -325,6 +323,7 @@ export default function TechnicalScoring() {
         Programa
       </Link>
       <h1 className="mt-3 text-3xl font-extrabold text-ink tracking-tight">Técnica</h1>
+      <div className="mt-3"><CoachBar /></div>
       {isAdmin && (
         <>
       <p className="mt-1 text-sm text-ink-soft">

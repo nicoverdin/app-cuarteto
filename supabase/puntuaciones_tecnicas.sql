@@ -73,18 +73,20 @@ create trigger puntuaciones_tecnicas_touch
 alter table public.sesiones_tecnicas      enable row level security;
 alter table public.puntuaciones_tecnicas  enable row level security;
 
+-- Mismo nombre que usa cerrar_escritura.sql; se borran también los nombres antiguos.
 drop policy if exists "lectura publica sesiones"       on public.sesiones_tecnicas;
 drop policy if exists "lectura publica puntuaciones"   on public.puntuaciones_tecnicas;
+drop policy if exists "lectura publica"                on public.sesiones_tecnicas;
+drop policy if exists "lectura publica"                on public.puntuaciones_tecnicas;
 drop policy if exists "escritura abierta sesiones"     on public.sesiones_tecnicas;
 drop policy if exists "escritura abierta puntuaciones" on public.puntuaciones_tecnicas;
 
-create policy "lectura publica sesiones"       on public.sesiones_tecnicas     for select to anon, authenticated using (true);
-create policy "lectura publica puntuaciones"   on public.puntuaciones_tecnicas for select to anon, authenticated using (true);
+create policy "lectura publica" on public.sesiones_tecnicas     for select to anon, authenticated using (true);
+create policy "lectura publica" on public.puntuaciones_tecnicas for select to anon, authenticated using (true);
 
--- ESCRITURA ABIERTA con la clave anónima: la app no tiene login (el "modo entrenador" es solo una URL),
--- así que es el mismo nivel de protección que disco_cuarteto. Para cerrarla, activa Supabase Auth y cambia
--- "to anon" por "to authenticated" (o limita a auth.uid() del entrenador).
-create policy "escritura abierta sesiones"     on public.sesiones_tecnicas     for all to anon using (true) with check (true);
-create policy "escritura abierta puntuaciones" on public.puntuaciones_tecnicas for all to anon using (true) with check (true);
+-- ESCRITURA: este script ya NO la abre. Sin política de escritura nadie puede modificar nada con la clave
+-- anónima. Ejecuta después supabase/cerrar_escritura.sql, que da permiso de escritura solo al entrenador
+-- (cuenta de Supabase Auth). Si ya tenías las políticas "escritura abierta", las borra más arriba y ese script
+-- las sustituye.
 
 commit;

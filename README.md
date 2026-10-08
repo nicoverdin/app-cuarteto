@@ -12,7 +12,17 @@ Aplicación web (Next.js 16, React 19, Tailwind 4, Supabase) para gestionar el t
 
 ### Modo entrenador
 
-Añadiendo `?entrenador=nico` a la URL se activan las funciones de entrenador (p. ej. editar y reordenar correcciones). **Es solo un ajuste de interfaz**: no hay autenticación y cualquiera que conozca el parámetro puede usarlo. La seguridad real depende de las políticas RLS de Supabase, no de este modo.
+Editar (correcciones, orden, sección Técnica) requiere una **cuenta de entrenador de Supabase Auth**. Con `?entrenador=nico` en la URL aparece el formulario de acceso (correo y contraseña); sin esa URL las alumnas no ven nada de esto. El parámetro solo muestra el formulario: **los permisos los dan las políticas RLS de la base de datos**, que solo dejan escribir a las cuentas de la tabla `public.entrenadores` (lectura pública para todos). Sin conexión, la app recuerda en ese dispositivo que la cuenta era de entrenador, solo para mostrar la interfaz.
+
+Puesta en marcha (una vez):
+
+1. Supabase → Authentication → Users → *Add user*: correo y contraseña del entrenador (con *Auto Confirm*).
+2. Authentication → Sign In / Providers: desactiva *Allow new users to sign up*.
+3. Edita el correo en `supabase/cerrar_escritura.sql` y ejecútalo en el SQL Editor (crea `entrenadores`, `es_entrenador()` y las políticas; si el correo no existe, cancela sin cambiar nada).
+
+Conviene ejecutar el SQL y desplegar la versión nueva de la app a la vez: con el SQL sin ejecutar, la app avisa de que falta (tras iniciar sesión); con el SQL ejecutado y una app antigua, las ediciones fallan y se revierten con un aviso. Ejecútalo el último, después de los demás scripts de `supabase/`, y vuelve a ejecutarlo si creas tablas nuevas.
+
+Mantenimiento: la contraseña se restablece desde Supabase → Authentication → Users. Si borras al usuario, la fila de `entrenadores` desaparece (`on delete cascade`): crea otro usuario y repite el paso 3 con su correo.
 
 ## Variables de entorno
 
@@ -28,6 +38,7 @@ Los datos viven en Supabase. Los scripts SQL están en `supabase/` y se ejecutan
 - Tabla `disco_cuarteto`: la que usa la app actualmente (correcciones y datos del equipo).
 - `supabase/agregar_updated_at.sql` y `supabase/normalizar_correcciones.sql`: preparados, **no aplicados por defecto**; revísalos antes de ejecutarlos.
 - `supabase/puntuaciones_tecnicas.sql`: tabla de la sección Técnica (`/tecnica`); hay que aplicarla para que esa sección guarde puntuaciones.
+- `supabase/cerrar_escritura.sql`: cierra la escritura abierta (solo el entrenador escribe). Ejecútalo después de los demás; se puede repetir. Ver *Modo entrenador*.
 
 ## Desarrollo
 

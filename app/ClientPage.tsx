@@ -7,6 +7,8 @@ import RoutineSection from '../components/RoutineSection';
 import InstallHint from '../components/InstallHint';
 import LastUpdated from '../components/LastUpdated';
 import AthleteFilter from '../components/AthleteFilter';
+import CoachBar from '../components/CoachBar';
+import { useCoach, useWantsCoach } from '../lib/auth';
 import TodayView from '../components/TodayView';
 import WeeklyProgress from '../components/WeeklyProgress';
 import { isFor, useAthlete } from '../lib/athletes';
@@ -20,9 +22,6 @@ interface Toast {
   kind: 'ok' | 'error';
   action?: { label: string; run: () => void };
 }
-
-const isCoachUrl = () =>
-  typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('entrenador') === 'nico';
 
 interface Props {
   initialRoutine: RoutinePart[] | null;
@@ -55,8 +54,11 @@ function ToastBox({ toast }: { toast: Toast }) {
 
 export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) {
   const [routine, setRoutine] = useState<RoutinePart[]>(initialRoutine ?? (supabase ? [] : initialData));
-  // false en servidor/hidratación, se resuelve en el cliente sin setState en un efecto
-  const isAdmin = useSyncExternalStore(() => () => {}, isCoachUrl, () => false);
+  // Entrenador = sesión de Supabase verificada por la BD (lib/auth.ts). false en servidor y en la primera pintura.
+  const isAdmin = useCoach().status === 'coach';
+  const wantsCoach = useWantsCoach();
+  const needsSeedRef = useRef(false); // BD vacía: falta guardar el programa inicial
+  const [seedKey, setSeedKey] = useState(0);
   const [isLoading, setIsLoading] = useState(!initialRoutine && !!supabase);
   const [loadError, setLoadError] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<string | null>(initialUpdatedAt);
@@ -106,6 +108,19 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
     setToast(t);
     toastTimer.current = setTimeout(() => setToast(null), t.action ? 6000 : 3000);
   }, []);
+
+  // BD vacía: solo el entrenador verificado guarda el programa inicial.
+  useEffect(() => {
+    if (!isAdmin || !needsSeedRef.current || !supabase) return;
+    needsSeedRef.current = false;
+    supabase
+      .from('disco_cuarteto')
+      .upsert({ id: 1, data: initialData })
+      .select('id')
+      .then(({ error }) => {
+        if (error) showToast({ message: 'No se pudo guardar el programa inicial.', kind: 'error' });
+      });
+  }, [isAdmin, seedKey, showToast]);
 
   const commit = useCallback((next: RoutinePart[]) => {
     liveRef.current = next;
@@ -158,10 +173,9 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
           // La BD está realmente vacía: usamos el respaldo y solo el entrenador lo persiste.
           confirmedRef.current = initialData;
           commit(initialData);
-          if (isCoachUrl()) {
-            const { error } = await client.from('disco_cuarteto').upsert({ id: 1, data: initialData }).select('id');
-            if (error) showToast({ message: 'No se pudo guardar el programa inicial.', kind: 'error' });
-          }
+          // Se siembra en un efecto aparte, cuando el entrenador esté verificado (puede tardar más que esta carga).
+          needsSeedRef.current = true;
+          setSeedKey(k => k + 1);
         }
         setIsOffline(false);
       } catch {
@@ -500,6 +514,7 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
 
       <div className="max-w-md mx-auto px-4 mt-6">
         {updatedAt && <LastUpdated iso={updatedAt} />}
+        <CoachBar />
         <Link
           href="/reglamento"
           className="mb-5 flex items-center justify-center gap-2 rounded-2xl border border-line bg-surface px-4 py-3 text-sm font-semibold text-accent focus-visible:outline-2 focus-visible:outline-accent"
@@ -508,7 +523,7 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
           Consultar el reglamento
         </Link>
         <Link
-          href={isAdmin ? '/tecnica?entrenador=nico' : '/tecnica'}
+          href={isAdmin || wantsCoach ? '/tecnica?entrenador=nico' : '/tecnica'}
           className="mb-5 flex items-center justify-center gap-2 rounded-2xl border border-line bg-surface px-4 py-3 text-sm font-semibold text-accent focus-visible:outline-2 focus-visible:outline-accent"
         >
           <ClipboardList className="w-4 h-4" aria-hidden="true" />
