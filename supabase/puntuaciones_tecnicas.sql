@@ -1,4 +1,4 @@
--- Sección "Técnica": sesiones de puntuación y puntuaciones por elemento / patinadora / grupo.
+-- Sección "Técnica": sesiones de puntuación y puntuaciones por elemento / intento / patinadora / grupo.
 --
 -- ESTADO: preparada, NO aplicada. La ruta /tecnica avisa de que faltan las tablas hasta que se ejecute.
 -- Cómo ejecutarla: Supabase → SQL Editor → pegar y ejecutar (una transacción: si algo falla no se cambia nada).
@@ -19,16 +19,18 @@ create table if not exists public.sesiones_tecnicas (
 -- atleta = '' es la puntuación del GRUPO (cuarteto completo); si no, el nombre de la patinadora.
 -- nivel = índice del nivel en lib/technical/catalog.ts (0 = sin nivel, 1 = Base, 2 = Nivel 1 …).
 -- En el grupo, nivel null = "automático" (se deriva de los niveles de las patinadoras).
+-- intento = número de intento del elemento dentro de la sesión (1, 2, 3…): permite repetir un elemento en un entrenamiento.
 -- Los rangos reales (según elemento) los valida la app con el catálogo; aquí solo los límites duros.
 create table if not exists public.puntuaciones_tecnicas (
   sesion_id  uuid not null references public.sesiones_tecnicas(id) on delete cascade,
   elemento   text not null,
+  intento    int  not null default 1,
   atleta     text not null default '',
   nivel      int  check (nivel between 0 and 9),
   qoe        int  not null default 0 check (qoe between -3 and 3),
   extras     text[] not null default '{}',
   actualizada_en timestamptz not null default now(),
-  primary key (sesion_id, elemento, atleta),
+  primary key (sesion_id, elemento, intento, atleta),
   check (atleta = '' or nivel is not null),
   check (atleta = '' or extras = '{}')
 );
@@ -36,6 +38,25 @@ create table if not exists public.puntuaciones_tecnicas (
 -- Migración de versiones anteriores -----------------------------------------------------------
 -- (sin "elementos" en sesiones_tecnicas, o sin el check de ids). Es seguro repetirla.
 alter table public.sesiones_tecnicas add column if not exists elementos text[] not null default '{}';
+
+-- Intentos (versiones anteriores solo admitían un intento por elemento: las filas existentes pasan a ser el intento 1).
+alter table public.puntuaciones_tecnicas add column if not exists intento int not null default 1;
+alter table public.puntuaciones_tecnicas drop constraint if exists puntuaciones_tecnicas_intento_rango;
+alter table public.puntuaciones_tecnicas add constraint puntuaciones_tecnicas_intento_rango check (intento between 1 and 20);
+
+-- La clave primaria pasa a incluir el intento (solo si todavía no lo incluye).
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint c
+    join pg_attribute a on a.attrelid = c.conrelid and a.attnum = any (c.conkey)
+    where c.conrelid = 'public.puntuaciones_tecnicas'::regclass and c.contype = 'p' and a.attname = 'intento'
+  ) then
+    alter table public.puntuaciones_tecnicas drop constraint puntuaciones_tecnicas_pkey;
+    alter table public.puntuaciones_tecnicas add primary key (sesion_id, elemento, intento, atleta);
+  end if;
+end $$;
 
 -- "elementos" solo puede tener ids no vacíos (sin atarlos al catálogo, que vive en la app).
 alter table public.sesiones_tecnicas drop constraint if exists sesiones_tecnicas_elementos_ids;

@@ -9,11 +9,19 @@
 // Valor de grupo: nivel de grupo + QOE de grupo (+ bonus). Es el que suma al total técnico.
 // Valor individual: nivel + QOE de cada patinadora; sirve de seguimiento y NO se suma al total técnico.
 // Nivel de grupo "automático": el mayor nivel L que alcanzan al menos `minSkaters` patinadoras (nivel ≥ L).
+// Intentos: una sesión puede tener varios intentos del mismo elemento (entrenamientos). Cada intento se puntúa por
+// separado y el total técnico cuenta, de cada elemento, el intento de mayor valor de grupo (si empatan, el último).
+// Los totales individuales (seguimiento) usan el mejor valor propio de cada patinadora en cada elemento.
 
 import { CATALOG, MAX_QOE, TechElement, getElement } from './catalog';
 
+/** Máximo de intentos de un mismo elemento en una sesión. */
+export const MAX_ATTEMPTS = 20;
+
 export interface Score {
   elemento: string;
+  /** Número de intento del elemento dentro de la sesión (1, 2, 3…). */
+  intento: number;
   /** null = puntuación del grupo. */
   atleta: string | null;
   /** En grupo, null = automático (derivado de las patinadoras). */
@@ -77,7 +85,8 @@ export function derivedGroupLevel(el: TechElement, skaterLevels: readonly (numbe
   return null;
 }
 
-export interface ElementSummary {
+/** Resultado de un intento de un elemento. */
+export interface AttemptSummary {
   /** Cuántas patinadoras tienen nivel puesto. */
   scored: number;
   derivedLevel: number | null;
@@ -88,54 +97,94 @@ export interface ElementSummary {
   athletes: Record<string, ElementValue | null>;
 }
 
+export interface ElementSummary {
+  /** Intentos con alguna puntuación, por número de intento. */
+  attempts: Record<number, AttemptSummary>;
+  /** Números de intento con datos, de menor a mayor. */
+  list: number[];
+  /** Intento que cuenta para el total técnico (mayor valor de grupo; si empatan, el último). null = ninguno valorado. */
+  best: number | null;
+  bestValue: ElementValue | null;
+}
+
 export interface Summary {
   elements: Record<string, ElementSummary>;
-  /** Total técnico = suma de los valores de grupo. */
+  /** Total técnico = suma, por elemento, del mejor valor de grupo. */
   technicalTotal: number;
-  /** Suma de los valores individuales (seguimiento). */
+  /** Suma del mejor valor individual de cada elemento (seguimiento). */
   athleteTotals: Record<string, number>;
   /** Filas descartadas por no cumplir el catálogo (nivel, QOE o extra inexistentes). */
   ignored: number;
+}
+
+/** Intento vacío (aún sin puntuaciones), para pintar un intento recién creado. */
+export const emptyAttempt = (athletes: readonly string[]): AttemptSummary => ({
+  scored: 0,
+  derivedLevel: null,
+  groupLevel: null,
+  groupLevelIsAuto: true,
+  group: null,
+  athletes: Object.fromEntries(athletes.map(a => [a, null])),
+});
+
+function summarizeAttempt(el: TechElement, rows: readonly Score[], athletes: readonly string[]): AttemptSummary {
+  const groupRow = rows.find(s => s.atleta === null);
+  const athleteValues: Record<string, ElementValue | null> = {};
+  const levels: (number | null)[] = [];
+  for (const name of athletes) {
+    const row = rows.find(s => s.atleta === name);
+    if (row && row.nivel !== null) {
+      athleteValues[name] = elementValue(el, row.nivel, row.qoe);
+      levels.push(row.nivel);
+    } else {
+      athleteValues[name] = null;
+    }
+  }
+  const derivedLevel = derivedGroupLevel(el, levels);
+  const groupLevel = groupRow?.nivel ?? derivedLevel;
+  const group = groupRow && groupLevel !== null ? elementValue(el, groupLevel, groupRow.qoe, groupRow.extras) : null;
+  return {
+    scored: levels.length,
+    derivedLevel,
+    groupLevel,
+    groupLevelIsAuto: groupRow?.nivel == null,
+    group,
+    athletes: athleteValues,
+  };
 }
 
 export function summarize(allScores: readonly Score[], athletes: readonly string[], catalog: readonly TechElement[] = CATALOG): Summary {
   // Una fila inconsistente en la base no debe tumbar la página: se ignora y se cuenta.
   const scores = allScores.filter(s => validateScore(s, athletes) === null);
   const elements: Record<string, ElementSummary> = {};
-  const athleteTotals: Record<string, number> = Object.fromEntries(athletes.map(a => [a, 0]));
+  const bestOwn: Record<string, number>[] = []; // por elemento: mejor valor de cada patinadora
   let technicalTotal = 0;
 
   for (const el of catalog) {
     const mine = scores.filter(s => s.elemento === el.id);
-    const groupRow = mine.find(s => s.atleta === null);
-    const athleteValues: Record<string, ElementValue | null> = {};
-    const levels: (number | null)[] = [];
+    const list = [...new Set(mine.map(s => s.intento))].sort((a, b) => a - b);
+    const attempts: Record<number, AttemptSummary> = {};
+    let best: number | null = null;
+    const own: Record<string, number> = {};
 
-    for (const name of athletes) {
-      const row = mine.find(s => s.atleta === name);
-      if (row && row.nivel !== null) {
-        athleteValues[name] = elementValue(el, row.nivel, row.qoe);
-        athleteTotals[name] = round2(athleteTotals[name] + athleteValues[name]!.total);
-        levels.push(row.nivel);
-      } else {
-        athleteValues[name] = null;
+    for (const n of list) {
+      const att = summarizeAttempt(el, mine.filter(s => s.intento === n), athletes);
+      attempts[n] = att;
+      // `>=`: en un empate cuenta el intento posterior.
+      if (att.group && (best === null || att.group.total >= attempts[best].group!.total)) best = n;
+      for (const name of athletes) {
+        const v = att.athletes[name];
+        if (v && (own[name] === undefined || v.total > own[name])) own[name] = v.total;
       }
     }
-
-    const derivedLevel = derivedGroupLevel(el, levels);
-    const groupLevel = groupRow?.nivel ?? derivedLevel;
-    const group = groupRow && groupLevel !== null ? elementValue(el, groupLevel, groupRow.qoe, groupRow.extras) : null;
-    if (group) technicalTotal = round2(technicalTotal + group.total);
-
-    elements[el.id] = {
-      scored: levels.length,
-      derivedLevel,
-      groupLevel,
-      groupLevelIsAuto: groupRow?.nivel == null,
-      group,
-      athletes: athleteValues,
-    };
+    const bestValue = best === null ? null : attempts[best].group;
+    if (bestValue) technicalTotal = round2(technicalTotal + bestValue.total);
+    bestOwn.push(own);
+    elements[el.id] = { attempts, list, best, bestValue };
   }
+
+  const athleteTotals: Record<string, number> = Object.fromEntries(athletes.map(a => [a, 0]));
+  for (const own of bestOwn) for (const name of athletes) if (own[name] !== undefined) athleteTotals[name] = round2(athleteTotals[name] + own[name]);
   return { elements, technicalTotal, athleteTotals, ignored: allScores.length - scores.length };
 }
 
@@ -143,6 +192,7 @@ export function summarize(allScores: readonly Score[], athletes: readonly string
 export function validateScore(s: Score, athletes?: readonly string[]): string | null {
   const el = getElement(s.elemento);
   if (!el) return `Elemento desconocido: ${s.elemento}`;
+  if (!Number.isInteger(s.intento) || s.intento < 1 || s.intento > MAX_ATTEMPTS) return `Intento ${s.intento} fuera de rango (1–${MAX_ATTEMPTS})`;
   if (athletes && s.atleta !== null && !athletes.includes(s.atleta)) return `Patinadora desconocida: ${s.atleta}`;
   try {
     if (s.nivel !== null) assertLevel(el, s.nivel);

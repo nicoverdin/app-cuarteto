@@ -13,6 +13,7 @@ export interface TechSession {
 
 export interface Row {
   elemento: string;
+  intento: number | null;
   atleta: string;
   nivel: number | null;
   qoe: number;
@@ -21,6 +22,7 @@ export interface Row {
 
 export const toScore = (r: Row): Score => ({
   elemento: r.elemento,
+  intento: r.intento ?? 1,
   atleta: r.atleta === '' ? null : r.atleta,
   nivel: r.nivel,
   qoe: r.qoe,
@@ -29,7 +31,7 @@ export const toScore = (r: Row): Score => ({
 
 /** Score → fila de la base ('' = grupo). */
 export const toDbRow = (sessionId: string, s: Score) => ({
-  sesion_id: sessionId, elemento: s.elemento, atleta: s.atleta ?? '', nivel: s.nivel, qoe: s.qoe, extras: s.extras,
+  sesion_id: sessionId, elemento: s.elemento, intento: s.intento, atleta: s.atleta ?? '', nivel: s.nivel, qoe: s.qoe, extras: s.extras,
 });
 
 /** Separa las filas válidas de las que no cumplen el catálogo ni las patinadoras conocidas. */
@@ -95,26 +97,30 @@ export async function deleteSession(db: SupabaseClient, id: string) {
 export async function loadScores(db: SupabaseClient, sessionId: string): Promise<{ scores: Score[]; invalid: Score[] }> {
   const { data, error } = await withTimeout(db
     .from('puntuaciones_tecnicas')
-    .select('elemento, atleta, nivel, qoe, extras')
+    .select('elemento, intento, atleta, nivel, qoe, extras')
     .eq('sesion_id', sessionId));
   if (error) throw error;
   return splitRows(data as Row[]);
 }
 
 export async function saveScore(db: SupabaseClient, sessionId: string, s: Score) {
-  const { error } = await withTimeout(db.from('puntuaciones_tecnicas').upsert(toDbRow(sessionId, s), { onConflict: 'sesion_id,elemento,atleta' }));
+  const { error } = await withTimeout(db.from('puntuaciones_tecnicas').upsert(toDbRow(sessionId, s), { onConflict: 'sesion_id,elemento,intento,atleta' }));
   if (error) throw error;
 }
 
-/** Borra la puntuación de una patinadora (`atleta`), la del grupo (`null`) o, sin `atleta`, el elemento entero. */
-export async function deleteScores(db: SupabaseClient, sessionId: string, elemento: string, atleta?: string | null) {
+/**
+ * Borra la puntuación de una patinadora (`atleta`), la del grupo (`null`) o, sin `atleta`, todo el elemento.
+ * Con `intento` se limita a ese intento.
+ */
+export async function deleteScores(db: SupabaseClient, sessionId: string, elemento: string, atleta?: string | null, intento?: number) {
   let q = db.from('puntuaciones_tecnicas').delete().eq('sesion_id', sessionId).eq('elemento', elemento);
+  if (intento !== undefined) q = q.eq('intento', intento);
   if (atleta !== undefined) q = q.eq('atleta', atleta ?? '');
   const { error } = await withTimeout(q);
   if (error) throw error;
 }
 
-/** Borra filas concretas (elemento + atleta) de la sesión; sirve para limpiar las no válidas. */
-export async function deleteRows(db: SupabaseClient, sessionId: string, rows: { elemento: string; atleta: string | null }[]) {
-  for (const r of rows) await deleteScores(db, sessionId, r.elemento, r.atleta);
+/** Borra filas concretas (elemento + intento + atleta) de la sesión; sirve para limpiar las no válidas. */
+export async function deleteRows(db: SupabaseClient, sessionId: string, rows: { elemento: string; intento: number; atleta: string | null }[]) {
+  for (const r of rows) await deleteScores(db, sessionId, r.elemento, r.atleta, r.intento);
 }

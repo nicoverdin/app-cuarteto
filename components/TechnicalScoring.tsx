@@ -1,14 +1,14 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { ChevronLeft, Plus, Trash2, Users, User, Info, X } from 'lucide-react';
+import { ChevronLeft, Plus, Trash2, Users, User, Info, X, Star } from 'lucide-react';
 import { ATHLETES } from '../lib/athletes';
 import { supabase } from '../lib/supabase';
 import { useCoach, useWantsCoach } from '../lib/auth';
 import CoachBar from './CoachBar';
 import { CATALOG, CATALOG_SOURCE, QOE_VALUES, TechElement } from '../lib/technical/catalog';
-import { ElementValue, Score, summarize, validateScore } from '../lib/technical/score';
-import { createWriteQueue } from '../lib/technical/queue';
+import { ElementValue, MAX_ATTEMPTS, Score, emptyAttempt, summarize, validateScore } from '../lib/technical/score';
+import { createWriteQueue, RowRef } from '../lib/technical/queue';
 import {
   TechSession, createSession, deleteRows, deleteScores, deleteSession, isMissingColumn, isMissingTable, isTimeoutError, listSessions, loadScores, saveScore,
   updateSessionElements,
@@ -104,6 +104,8 @@ export default function TechnicalScoring() {
   const [newName, setNewName] = useState('');
   const [newDate, setNewDate] = useState(today);
   const [newElements, setNewElements] = useState<string[]>(() => CATALOG.map(e => e.id));
+  // Intento elegido en cada elemento (por defecto, el mejor).
+  const [attempt, setAttempt] = useState<Record<string, number>>({});
 
   // Sesión vigente, para descartar resultados de operaciones de otra sesión.
   const sessionRef = useRef<string | null>(null);
@@ -114,6 +116,7 @@ export default function TechnicalScoring() {
     confirmedRef.current = [];
     setSessionId(id);
     setScores(NO_SCORES);
+    setAttempt({});
     setLoadedFor(null);
     setInvalid([]);
     setLoadError(null);
@@ -200,10 +203,14 @@ export default function TechnicalScoring() {
     [session]
   );
   const summary = useMemo(() => summarize(shown, ATHLETES, active), [shown, active]);
-  const find = (elemento: string, atleta: string | null) =>
-    shown.find(s => s.elemento === elemento && s.atleta === atleta);
+  const find = (elemento: string, intento: number, atleta: string | null) =>
+    shown.find(s => s.elemento === elemento && s.intento === intento && s.atleta === atleta);
 
-  const sameRow = (a: Score, b: Score) => a.elemento === b.elemento && a.atleta === b.atleta;
+  // Fija el intento en pantalla (si aún seguía al «mejor»): sin esto, al editar el mejor intento la vista podría saltar a otro.
+  const pinAttempt = (elemento: string, intento: number) =>
+    setAttempt(a => (a[elemento] === undefined ? { ...a, [elemento]: intento } : a));
+
+  const sameRow = (a: Score, b: Score) => a.elemento === b.elemento && a.intento === b.intento && a.atleta === b.atleta;
   const withRow = (list: Score[], next: Score) => [...list.filter(s => !sameRow(s, next)), next];
 
   const persist = (next: Score) => {
@@ -212,18 +219,24 @@ export default function TechnicalScoring() {
     if (reason) { setSaveError(reason); return; }
     if (!supabase || !sid || !ready) return;
     const db = supabase;
-    mutate(sid, next.elemento, [next.atleta], list => withRow(list, next), () => saveScore(db, sid, next), list => withRow(list, next));
+    pinAttempt(next.elemento, next.intento);
+    mutate(sid, next.elemento, [{ intento: next.intento, atleta: next.atleta }], list => withRow(list, next), () => saveScore(db, sid, next), list => withRow(list, next));
   };
 
-  const remove = (elemento: string, atleta?: string | null) => {
+  // Borra una patinadora de un intento (`atleta` + `intento`), un intento entero (`intento`) o todo el elemento.
+  const remove = (elemento: string, atleta?: string | null, intento?: number) => {
     const sid = sessionRef.current;
     if (!supabase || !sid || !ready) return;
     const db = supabase;
-    const hit = (s: Score) => s.elemento === elemento && (atleta === undefined || s.atleta === atleta);
-    mutate(
-      sid, elemento, atleta === undefined ? [null, ...ATHLETES] : [atleta],
-      list => list.filter(s => !hit(s)), () => deleteScores(db, sid, elemento, atleta), list => list.filter(s => !hit(s))
-    );
+    const hit = (s: Score) =>
+      s.elemento === elemento && (intento === undefined || s.intento === intento) && (atleta === undefined || s.atleta === atleta);
+    const refs: RowRef[] =
+      atleta !== undefined && intento !== undefined
+        ? [{ intento, atleta }]
+        : shown.filter(hit).map(s => ({ intento: s.intento, atleta: s.atleta }));
+    if (refs.length === 0) return;
+    if (intento !== undefined) pinAttempt(elemento, intento);
+    mutate(sid, elemento, refs, list => list.filter(s => !hit(s)), () => deleteScores(db, sid, elemento, atleta, intento), list => list.filter(s => !hit(s)));
   };
 
   const addSession = async () => {
@@ -256,6 +269,11 @@ export default function TechnicalScoring() {
     if (on && scores.some(s => s.elemento === el.id) && !window.confirm(`¿Quitar ${el.name} y borrar sus puntuaciones de esta sesión?`)) return;
     const nextIds = on ? active.filter(a => a.id !== el.id).map(a => a.id) : CATALOG.filter(c => c.id === el.id || active.some(a => a.id === c.id)).map(c => c.id);
     const prevIds = session.elementos;
+    setAttempt(a => {
+      const rest = { ...a };
+      delete rest[el.id];
+      return rest;
+    });
     setToggling(true);
     setSaveError(null);
     setSessions(list => list.map(s => (s.id === sid ? { ...s, elementos: nextIds } : s)));
@@ -270,7 +288,8 @@ export default function TechnicalScoring() {
     setToggling(false);
     if (on) {
       const hit = (s: Score) => s.elemento === el.id;
-      mutate(sid, el.id, [null, ...ATHLETES], list => list.filter(s => !hit(s)), () => deleteScores(db, sid, el.id), list => list.filter(s => !hit(s)));
+      const refs: RowRef[] = scores.filter(hit).map(s => ({ intento: s.intento, atleta: s.atleta }));
+      mutate(sid, el.id, refs, list => list.filter(s => !hit(s)), () => deleteScores(db, sid, el.id), list => list.filter(s => !hit(s)));
     }
   };
 
@@ -346,6 +365,10 @@ export default function TechnicalScoring() {
             nivel. Sus totales son de seguimiento y no se suman al total técnico.
           </p>
           <p>
+            <b className="text-ink">Intentos:</b> puedes puntuar varios intentos del mismo elemento en una sesión. El
+            total técnico cuenta, de cada elemento, el intento con mejor valor de grupo (★).
+          </p>
+          <p>
             <b className="text-ink">Valor</b> = base del nivel + puntos del QOE (de −3 a +3) + extra feature
             (solo Traveling; cuenta la más alta).
           </p>
@@ -367,8 +390,8 @@ export default function TechnicalScoring() {
       )}
       {missingColumn && (
         <p role="alert" className="mt-4 rounded-2xl border border-danger/40 bg-surface px-4 py-3 text-sm text-ink-soft">
-          Falta una columna en la base de datos. Ejecuta en el SQL Editor de Supabase:{' '}
-          <code className="break-words">alter table public.sesiones_tecnicas add column if not exists elementos text[] not null default &apos;{'{}'}&apos;;</code>
+          Falta actualizar la base de datos. Vuelve a ejecutar <code>supabase/puntuaciones_tecnicas.sql</code> en el SQL Editor de
+          Supabase (se puede repetir sin problema).
         </p>
       )}
       {loadError && (
@@ -561,10 +584,18 @@ export default function TechnicalScoring() {
           <div className="mt-5 space-y-4">
             {active.map(el => {
               const sum = summary.elements[el.id];
-              const group = find(el.id, null);
+              // Intento en pantalla: el elegido; si no hay, el mejor, el último o el 1.
+              const current = attempt[el.id] ?? sum.best ?? sum.list[sum.list.length - 1] ?? 1;
+              const cur = sum.attempts[current] ?? emptyAttempt(ATHLETES);
+              const group = find(el.id, current, null);
               const hasAny = shown.some(s => s.elemento === el.id);
+              const currentHasRows = shown.some(s => s.elemento === el.id && s.intento === current);
+              const chips = [...new Set([...sum.list, current])].sort((a, b) => a - b);
+              const multi = chips.length > 1;
+              // Primer número de intento libre (hay huecos si se borró alguno); undefined = ya están los 20.
+              const nextFree = Array.from({ length: MAX_ATTEMPTS }, (_, i) => i + 1).find(n => !chips.includes(n));
               const readOnly = !isAdmin;
-              const base: Score = { elemento: el.id, atleta: null, nivel: null, qoe: 0, extras: [] };
+              const base: Score = { elemento: el.id, intento: current, atleta: null, nivel: null, qoe: 0, extras: [] };
 
               return (
                 <article key={el.id} className="rounded-2xl border border-line bg-surface p-4">
@@ -578,10 +609,51 @@ export default function TechnicalScoring() {
                       )}
                     </div>
                     <div className="text-right">
-                      <p className="text-2xl font-extrabold text-ink tabular-nums">{sum.group ? fmt(sum.group.total) : '—'}</p>
-                      {sum.group && <Breakdown v={sum.group} />}
+                      <p className="text-2xl font-extrabold text-ink tabular-nums">{sum.bestValue ? fmt(sum.bestValue.total) : '—'}</p>
+                      {sum.bestValue && <Breakdown v={sum.bestValue} />}
+                      {multi && sum.best !== null && <p className="text-xs text-ink-muted">mejor: intento {sum.best}</p>}
                     </div>
                   </header>
+
+                  {(isAdmin || multi) && (
+                    <div role="group" aria-label={`Intentos de ${el.name}`} className="mt-3 flex flex-wrap items-center gap-1.5">
+                      {chips.map(n => {
+                        const att = sum.attempts[n];
+                        const on = n === current;
+                        const isBest = multi && sum.best === n;
+                        return (
+                          <button
+                            key={n}
+                            type="button"
+                            aria-pressed={on}
+                            onClick={() => setAttempt(a => ({ ...a, [el.id]: n }))}
+                            className={`flex min-h-11 items-center gap-1.5 rounded-full border px-3.5 text-xs font-semibold tabular-nums transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
+                              on ? 'border-accent bg-accent text-on-accent' : 'border-line bg-surface text-ink-soft'
+                            }`}
+                          >
+                            {isBest && <Star className="w-3.5 h-3.5 shrink-0 fill-current" aria-label="mejor intento" />}
+                            Intento {n}
+                            <span className={on ? 'opacity-90' : 'text-ink-muted'}>{att?.group ? fmt(att.group.total) : '—'}</span>
+                          </button>
+                        );
+                      })}
+                      {isAdmin && nextFree !== undefined && (
+                        <button
+                          type="button"
+                          disabled={!currentHasRows}
+                          onClick={() => setAttempt(a => ({ ...a, [el.id]: nextFree }))}
+                          aria-label={`Añadir un intento de ${el.name}`}
+                          title={currentHasRows ? 'Añadir intento' : 'Puntúa este intento antes de añadir otro'}
+                          className="flex min-h-11 min-w-11 items-center justify-center rounded-full border border-line bg-surface text-accent disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-accent"
+                        >
+                          <Plus className="w-4 h-4" aria-hidden="true" />
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {isAdmin && !currentHasRows && nextFree !== undefined && (
+                    <p className="mt-1 text-xs text-ink-muted">Puntúa este intento para poder añadir otro.</p>
+                  )}
 
                   <div className="mt-3 rounded-xl bg-track p-3">
                     <h3 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-ink-soft">
@@ -593,9 +665,9 @@ export default function TechnicalScoring() {
                         label={`${el.name}: nivel del grupo`}
                         value={group?.nivel ?? null}
                         autoLabel={
-                          sum.derivedLevel === null
+                          cur.derivedLevel === null
                             ? 'Automático (faltan niveles)'
-                            : `Automático (${sum.derivedLevel === 0 ? 'sin nivel' : el.levels[sum.derivedLevel].code})`
+                            : `Automático (${cur.derivedLevel === 0 ? 'sin nivel' : el.levels[cur.derivedLevel].code})`
                         }
                         readOnly={readOnly}
                         onChange={nivel => persist({ ...(group ?? base), nivel })}
@@ -640,12 +712,12 @@ export default function TechnicalScoring() {
                   <div className="mt-3">
                     <h3 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-ink-soft">
                       <User className="w-3.5 h-3.5" aria-hidden="true" /> Individual
-                      <span className="font-medium normal-case tracking-normal text-ink-muted">· {sum.scored}/4 con nivel</span>
+                      <span className="font-medium normal-case tracking-normal text-ink-muted">· {cur.scored}/4 con nivel</span>
                     </h3>
                     <ul className="mt-2 space-y-2">
                       {ATHLETES.map(a => {
-                        const row = find(el.id, a);
-                        const val = sum.athletes[a];
+                        const row = find(el.id, current, a);
+                        const val = cur.athletes[a];
                         return (
                           <li key={a} className="rounded-xl bg-track/50 px-2.5 py-2">
                             <div className="flex items-center justify-between gap-2">
@@ -667,8 +739,8 @@ export default function TechnicalScoring() {
                                   readOnly={false}
                                   onChange={nivel =>
                                     nivel === null
-                                      ? remove(el.id, a)
-                                      : persist({ elemento: el.id, atleta: a, nivel, qoe: row?.qoe ?? 0, extras: [] })
+                                      ? remove(el.id, a, current)
+                                      : persist({ elemento: el.id, intento: current, atleta: a, nivel, qoe: row?.qoe ?? 0, extras: [] })
                                   }
                                 />
                                 <QoeSelect
@@ -687,14 +759,42 @@ export default function TechnicalScoring() {
                   </div>
 
                   {isAdmin && hasAny && (
-                    <button
-                      type="button"
-                      onClick={() => remove(el.id)}
-                      className="mt-3 flex items-center gap-1.5 text-xs font-semibold text-danger rounded-md focus-visible:outline-2 focus-visible:outline-danger"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-                      Borrar puntuaciones de {el.name}
-                    </button>
+                    <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1">
+                      {multi && currentHasRows && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!window.confirm(`¿Borrar el intento ${current} de ${el.name}?`)) return;
+                            remove(el.id, undefined, current);
+                            setAttempt(a => {
+                              const rest = { ...a };
+                              delete rest[el.id];
+                              return rest;
+                            });
+                          }}
+                          className="flex min-h-11 items-center gap-1.5 text-xs font-semibold text-danger rounded-md focus-visible:outline-2 focus-visible:outline-danger"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                          Borrar intento {current}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (multi && !window.confirm(`¿Borrar todos los intentos de ${el.name}?`)) return;
+                          remove(el.id);
+                          setAttempt(a => {
+                            const rest = { ...a };
+                            delete rest[el.id];
+                            return rest;
+                          });
+                        }}
+                        className="flex min-h-11 items-center gap-1.5 text-xs font-semibold text-danger rounded-md focus-visible:outline-2 focus-visible:outline-danger"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                        {multi ? `Borrar todos los intentos de ${el.name}` : `Borrar puntuaciones de ${el.name}`}
+                      </button>
+                    </div>
                   )}
                 </article>
               );

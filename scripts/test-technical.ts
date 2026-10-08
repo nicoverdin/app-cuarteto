@@ -4,9 +4,10 @@ import { test } from 'node:test';
 import { CATALOG, getElement } from '../lib/technical/catalog';
 import { createWriteQueue } from '../lib/technical/queue';
 import { splitRows, toDbRow, toScore } from '../lib/technical/store';
-import { derivedGroupLevel, elementValue, summarize, validateScore, type Score } from '../lib/technical/score';
+import { derivedGroupLevel, elementValue, summarize, validateScore, type Score, emptyAttempt, MAX_ATTEMPTS } from '../lib/technical/score';
 
 const el = (id: string) => getElement(id)!;
+const att = (r: ReturnType<typeof summarize>, id: string, n = 1) => r.elements[id].attempts[n] ?? emptyAttempt(ATHLETES);
 const ATHLETES = ['A', 'B', 'C', 'D'];
 
 test('catálogo: 6 niveles por elemento, niveles crecientes y QOE creciente', () => {
@@ -66,8 +67,9 @@ test('nivel de grupo derivado: traveling exige las 4, cluster y línea 3 de 4', 
   assert.equal(derivedGroupLevel(el('line'), [0, 0, 0, 0]), 0);
 });
 
-const s = (elemento: string, atleta: string | null, nivel: number | null, qoe = 0, extras: string[] = []): Score => ({
-  elemento, atleta, nivel, qoe, extras,
+const s = (elemento: string, atleta: string | null, nivel: number | null, qoe = 0, extras: string[] = [], intento = 1): Score => ({
+  elemento,
+  intento, atleta, nivel, qoe, extras,
 });
 
 test('summarize: totales por patinadora, de grupo y técnico', () => {
@@ -78,12 +80,12 @@ test('summarize: totales por patinadora, de grupo y técnico', () => {
     s('line', 'A', 2, -1),
   ];
   const r = summarize(scores, ATHLETES);
-  assert.equal(r.elements.cluster.derivedLevel, 3);
-  assert.equal(r.elements.cluster.groupLevelIsAuto, true);
-  assert.equal(r.elements.cluster.group?.total, 5.5); // índice 3 = ClSq2: 5 + 0.5
-  assert.equal(r.elements.traveling.groupLevelIsAuto, false);
-  assert.equal(r.elements.traveling.group?.total, 5); // índice 2 = Tr1: 3.5 + 1.5 (espejo)
-  assert.equal(r.elements.line.group, null); // sin fila de grupo no hay valor
+  assert.equal(att(r, 'cluster').derivedLevel, 3);
+  assert.equal(att(r, 'cluster').groupLevelIsAuto, true);
+  assert.equal(att(r, 'cluster').group?.total, 5.5); // índice 3 = ClSq2: 5 + 0.5
+  assert.equal(att(r, 'traveling').groupLevelIsAuto, false);
+  assert.equal(att(r, 'traveling').group?.total, 5); // índice 2 = Tr1: 3.5 + 1.5 (espejo)
+  assert.equal(att(r, 'line').group, null); // sin fila de grupo no hay valor
   assert.equal(r.technicalTotal, 10.5);
   assert.equal(r.athleteTotals.A, 8.7); // cluster ClSq2 (5) + línea L1 con QOE -1 (4 - 0.3)
   assert.equal(r.athleteTotals.C, 5.5); // ClSq2 con QOE +1: 5 + 0.5
@@ -109,17 +111,17 @@ test('catálogo: valores base de la tabla oficial 2026 (contraste)', () => {
 
 test('summarize: nivel manual de grupo 0 manda sobre el derivado y vale 0', () => {
   const r = summarize([s('cluster', null, 0, 2), s('cluster', 'A', 5), s('cluster', 'B', 5), s('cluster', 'C', 5)], ATHLETES);
-  assert.equal(r.elements.cluster.derivedLevel, 5);
-  assert.equal(r.elements.cluster.groupLevel, 0);
-  assert.equal(r.elements.cluster.groupLevelIsAuto, false);
-  assert.equal(r.elements.cluster.group?.total, 0);
+  assert.equal(att(r, 'cluster').derivedLevel, 5);
+  assert.equal(att(r, 'cluster').groupLevel, 0);
+  assert.equal(att(r, 'cluster').groupLevelIsAuto, false);
+  assert.equal(att(r, 'cluster').group?.total, 0);
   assert.equal(r.technicalTotal, 0);
 });
 
 test('summarize: grupo con nivel null sin derivado pero con QOE no tiene valor', () => {
   const r = summarize([s('line', null, null, 2), s('line', 'A', 3)], ATHLETES);
-  assert.equal(r.elements.line.derivedLevel, null);
-  assert.equal(r.elements.line.group, null);
+  assert.equal(att(r, 'line').derivedLevel, null);
+  assert.equal(att(r, 'line').group, null);
   assert.equal(r.technicalTotal, 0);
   assert.equal(r.ignored, 0);
 });
@@ -141,9 +143,9 @@ test('summarize: ignora filas inválidas sin lanzar y las cuenta', () => {
   ];
   const r = summarize(scores, ATHLETES);
   assert.equal(r.ignored, 4);
-  assert.equal(r.elements.line.group, null);
-  assert.equal(r.elements.traveling.group, null);
-  assert.equal(r.elements.cluster.group?.total, 3.5);
+  assert.equal(att(r, 'line').group, null);
+  assert.equal(att(r, 'traveling').group, null);
+  assert.equal(att(r, 'cluster').group?.total, 3.5);
   assert.equal(r.technicalTotal, 3.5);
 });
 
@@ -158,17 +160,19 @@ test('validateScore: la patinadora debe estar en la lista; summarize cuenta las 
 
 // --- store: mapeo fila ↔ Score ---
 test('store: "" ↔ null (grupo), extras null y filtrado de filas inválidas', () => {
-  assert.deepEqual(toScore({ elemento: 'line', atleta: '', nivel: null, qoe: 1, extras: null }), s('line', null, null, 1));
-  assert.equal(toScore({ elemento: 'line', atleta: 'A', nivel: 2, qoe: 0, extras: [] }).atleta, 'A');
-  assert.deepEqual(toDbRow('sid', s('line', null, null, 1)), { sesion_id: 'sid', elemento: 'line', atleta: '', nivel: null, qoe: 1, extras: [] });
+  assert.deepEqual(toScore({ elemento: 'line', intento: 1, atleta: '', nivel: null, qoe: 1, extras: null }), s('line', null, null, 1));
+  assert.equal(toScore({ elemento: 'line', intento: null, atleta: '', nivel: null, qoe: 0, extras: [] }).intento, 1); // filas antiguas
+  assert.equal(toScore({ elemento: 'line', intento: 2, atleta: 'A', nivel: 2, qoe: 0, extras: [] }).intento, 2);
+  assert.deepEqual(toDbRow('sid', s('line', null, null, 1)), { sesion_id: 'sid', elemento: 'line', intento: 1, atleta: '', nivel: null, qoe: 1, extras: [] });
+  assert.equal(toDbRow('sid', s('line', 'A', 2, 0, [], 3)).intento, 3);
   assert.equal(toDbRow('sid', s('line', 'A', 2)).atleta, 'A');
   const { scores, invalid } = splitRows(
     [
-      { elemento: 'line', atleta: '', nivel: 2, qoe: 0, extras: [] },
-      { elemento: 'line', atleta: 'A', nivel: 2, qoe: 0, extras: null },
-      { elemento: 'line', atleta: 'Z', nivel: 2, qoe: 0, extras: [] }, // atleta desconocida
-      { elemento: 'foo', atleta: '', nivel: 1, qoe: 0, extras: [] }, // elemento desconocido
-      { elemento: 'line', atleta: 'B', nivel: null, qoe: 0, extras: [] }, // sin nivel
+      { elemento: 'line', intento: 1, atleta: '', nivel: 2, qoe: 0, extras: [] },
+      { elemento: 'line', intento: 1, atleta: 'A', nivel: 2, qoe: 0, extras: null },
+      { elemento: 'line', intento: 1, atleta: 'Z', nivel: 2, qoe: 0, extras: [] }, // atleta desconocida
+      { elemento: 'foo', intento: 1, atleta: '', nivel: 1, qoe: 0, extras: [] }, // elemento desconocido
+      { elemento: 'line', intento: 1, atleta: 'B', nivel: null, qoe: 0, extras: [] }, // sin nivel
     ],
     ATHLETES
   );
@@ -177,9 +181,12 @@ test('store: "" ↔ null (grupo), extras null y filtrado de filas inválidas', (
 });
 
 // --- cola de escrituras ---
-type Row = { elemento: string; atleta: string | null; v: number };
-const row = (atleta: string | null, v: number): Row => ({ elemento: 'line', atleta, v });
-const setRow = (list: Row[], next: Row) => [...list.filter(x => !(x.elemento === next.elemento && x.atleta === next.atleta)), next];
+type Row = { elemento: string; intento: number; atleta: string | null; v: number };
+const row = (atleta: string | null, v: number, intento = 1): Row => ({ elemento: 'line', intento, atleta, v });
+const setRow = (list: Row[], next: Row) => [
+  ...list.filter(x => !(x.elemento === next.elemento && x.intento === next.intento && x.atleta === next.atleta)),
+  next,
+];
 
 function harness(initial: Row[] = []) {
   const st = { session: 's1' as string | null, confirmed: initial, screen: initial, errors: 0 };
@@ -191,12 +198,12 @@ function harness(initial: Row[] = []) {
     onError: () => { st.errors++; },
   });
   const edit = (next: Row, write: () => Promise<void>, sid = 's1') =>
-    mutate(sid, next.elemento, [next.atleta], l => setRow(l, next), write, l => setRow(l, next));
+    mutate(sid, next.elemento, [{ intento: next.intento, atleta: next.atleta }], l => setRow(l, next), write, l => setRow(l, next));
   return { st, edit };
 }
 const ok = () => Promise.resolve();
 const ko = () => Promise.reject(new Error('fallo'));
-const val = (st: { screen: Row[] }, a: string | null) => st.screen.find(x => x.atleta === a)?.v;
+const val = (st: { screen: Row[] }, a: string | null, intento = 1) => st.screen.find(x => x.atleta === a && x.intento === intento)?.v;
 
 test('cola: A falla y B (misma fila) va detrás -> se revierte a lo confirmado solo si nadie la tocó después', async () => {
   const { st, edit } = harness([row('A', 1)]);
@@ -253,8 +260,8 @@ test('cola: si el handler de éxito lanza, la cadena sigue y la siguiente escrit
     onError: e => { errs.push(e); },
   });
   const ran: number[] = [];
-  const p1 = mutate('s1', 'line', ['A'], l => l, async () => { ran.push(1); }, l => l);
-  const p2 = mutate('s1', 'line', ['A'], l => l, async () => { ran.push(2); }, l => l);
+  const p1 = mutate('s1', 'line', [{ intento: 1, atleta: 'A' }], l => l, async () => { ran.push(1); }, l => l);
+  const p2 = mutate('s1', 'line', [{ intento: 1, atleta: 'A' }], l => l, async () => { ran.push(2); }, l => l);
   await Promise.all([p1, p2]);
   assert.deepEqual(ran, [1, 2]);
   assert.equal(errs.length, 2);
@@ -267,10 +274,70 @@ test('cola: pending e idle reflejan las escrituras en curso', async () => {
     getSession: () => 's1', getConfirmed: () => [], setConfirmed: () => {}, applyLocal: () => {}, onError: () => {},
     onPending: n => { seen.push(n); },
   });
-  const p = mutate('s1', 'line', ['A'], l => l, ko, l => l);
+  const p = mutate('s1', 'line', [{ intento: 1, atleta: 'A' }], l => l, ko, l => l);
   assert.equal(mutate.pending(), 1);
   await mutate.idle();
   await p;
   assert.equal(mutate.pending(), 0);
   assert.deepEqual(seen, [1, 0]);
+});
+
+// --- intentos ---
+test('intentos: el total técnico cuenta el mejor intento de cada elemento', () => {
+  const r = summarize(
+    [
+      s('cluster', null, 3, 0, [], 1), // ClSq2: 5
+      s('cluster', null, 4, 1, [], 2), // ClSq3 +1: 6.8 + 0.7 = 7.5  <- mejor
+      s('cluster', null, 2, 0, [], 3), // ClSq1: 3.5
+      s('line', null, 2, 0, [], 1), // L1: 4
+    ],
+    ATHLETES
+  );
+  assert.deepEqual(r.elements.cluster.list, [1, 2, 3]);
+  assert.equal(r.elements.cluster.best, 2);
+  assert.equal(r.elements.cluster.bestValue?.total, 7.5);
+  assert.equal(att(r, 'cluster', 1).group?.total, 5);
+  assert.equal(r.technicalTotal, 11.5); // 7.5 + 4, sin sumar los demás intentos
+});
+
+test('intentos: en un empate cuenta el intento posterior; un intento sin grupo no cuenta', () => {
+  const r = summarize([s('line', null, 3, 0, [], 1), s('line', null, 3, 0, [], 2), s('line', 'A', 5, 0, [], 3)], ATHLETES);
+  assert.equal(r.elements.line.best, 2);
+  assert.deepEqual(r.elements.line.list, [1, 2, 3]);
+  assert.equal(att(r, 'line', 3).group, null); // solo hay una patinadora: sin fila de grupo
+  assert.equal(r.technicalTotal, 5.5);
+});
+
+test('intentos: el nivel automático y el valor individual se calculan por intento', () => {
+  const r = summarize(
+    [
+      s('cluster', 'A', 5, 0, [], 1), s('cluster', 'B', 5, 0, [], 1), s('cluster', 'C', 5, 0, [], 1), // nivel 5 en el intento 1
+      s('cluster', 'A', 2, 0, [], 2), s('cluster', 'B', 2, 0, [], 2), s('cluster', 'C', 2, 0, [], 2), // nivel 2 en el intento 2
+    ],
+    ATHLETES
+  );
+  assert.equal(att(r, 'cluster', 1).derivedLevel, 5);
+  assert.equal(att(r, 'cluster', 2).derivedLevel, 2);
+  // totales individuales: su mejor valor del elemento, no la suma de intentos
+  assert.equal(r.athleteTotals.A, 8.3);
+  assert.equal(r.athleteTotals.D, 0);
+});
+
+test('intentos: validateScore acota el número de intento', () => {
+  assert.equal(validateScore(s('line', 'A', 3, 0, [], MAX_ATTEMPTS)), null);
+  assert.ok(validateScore(s('line', 'A', 3, 0, [], 0)));
+  assert.ok(validateScore(s('line', 'A', 3, 0, [], MAX_ATTEMPTS + 1)));
+  assert.ok(validateScore(s('line', 'A', 3, 0, [], 1.5)));
+  // una fila con intento absurdo se ignora, no rompe
+  assert.equal(summarize([s('line', 'A', 3, 0, [], 99)], ATHLETES).ignored, 1);
+});
+
+test('cola: los intentos son filas independientes (el fallo del 2 no toca el 1)', async () => {
+  const { st, edit } = harness([row('A', 1, 1), row('A', 10, 2)]);
+  await edit(row('A', 11, 2), ko);
+  assert.equal(val(st, 'A', 2), 10); // revertido
+  assert.equal(val(st, 'A', 1), 1); // intacto
+  await edit(row('A', 2, 1), ok);
+  assert.equal(val(st, 'A', 1), 2);
+  assert.equal(val(st, 'A', 2), 10);
 });

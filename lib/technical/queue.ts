@@ -2,6 +2,13 @@
 
 export interface QueueRow {
   elemento: string;
+  intento: number;
+  atleta: string | null;
+}
+
+/** Fila dentro de un elemento: qué intento y de quién (null = grupo). */
+export interface RowRef {
+  intento: number;
   atleta: string | null;
 }
 
@@ -18,10 +25,10 @@ export interface QueueOptions<T extends QueueRow> {
   onPending?: (n: number) => void;
 }
 
-const rowKey = (sid: string, elemento: string, atleta: string | null) => `${sid}|${elemento}|${atleta ?? ''}`;
+const rowKey = (sid: string, elemento: string, r: RowRef) => `${sid}|${elemento}|${r.intento}|${r.atleta ?? ''}`;
 
 /**
- * Escritura optimista de las filas (elemento, atletas) de la sesión `sid`:
+ * Escritura optimista de las filas (elemento, intento, atleta) de la sesión `sid`:
  *  · en cola por sesión+elemento, para que lleguen a la base en orden;
  *  · si falla, solo se revierten esas filas (a lo último confirmado) y solo si nadie las ha vuelto a tocar;
  *  · si la sesión activa cambió, no se toca la pantalla.
@@ -39,14 +46,14 @@ export function createWriteQueue<T extends QueueRow>(opts: QueueOptions<T>) {
   };
 
   function mutate(
-    sid: string, elemento: string, atletas: (string | null)[],
+    sid: string, elemento: string, refs: RowRef[],
     optimistic: (list: T[]) => T[], write: () => Promise<void>, confirm: (list: T[]) => T[]
   ): Promise<void> {
     const live = () => opts.getSession() === sid;
     if (live()) opts.applyLocal(optimistic);
     const mine = new Map<string, number>();
-    for (const a of atletas) {
-      const k = rowKey(sid, elemento, a);
+    for (const r of refs) {
+      const k = rowKey(sid, elemento, r);
       const n = (seqs.get(k) ?? 0) + 1;
       seqs.set(k, n);
       mine.set(k, n);
@@ -60,8 +67,8 @@ export function createWriteQueue<T extends QueueRow>(opts: QueueOptions<T>) {
       },
       e => {
         if (!live()) return;
-        const mineNow = atletas.filter(a => seqs.get(rowKey(sid, elemento, a)) === mine.get(rowKey(sid, elemento, a)));
-        const inSet = (s: T) => s.elemento === elemento && mineNow.includes(s.atleta);
+        const mineNow = refs.filter(r => seqs.get(rowKey(sid, elemento, r)) === mine.get(rowKey(sid, elemento, r)));
+        const inSet = (s: T) => s.elemento === elemento && mineNow.some(r => r.intento === s.intento && r.atleta === s.atleta);
         const back = opts.getConfirmed().filter(inSet);
         opts.applyLocal(list => [...list.filter(s => !inSet(s)), ...back]);
         opts.onError(e);

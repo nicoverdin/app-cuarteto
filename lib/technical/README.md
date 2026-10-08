@@ -32,6 +32,9 @@ valor = base(nivel) + ajusteQOE(nivel, qoe) + bonusExtra
   El nivel puede ser manual o «Automático»: el mayor nivel que alcanzan al menos `minSkaters` patinadoras
   (3 de 4 en Cluster y Línea; las 4 en Traveling).
 - **Individual** (cada patinadora): nivel + QOE propios, solo de seguimiento. Sus totales **no** se suman al total técnico.
+- **Intentos**: una sesión puede tener varios intentos del mismo elemento (columna `intento`, 1–20). Cada intento se puntúa
+  por separado (grupo e individual). El **total técnico cuenta el intento con mejor valor de grupo** de cada elemento
+  (si empatan, el posterior); los totales individuales usan el mejor valor propio de cada patinadora en cada elemento.
 - El índice de nivel es: `0` = sin nivel, `1` = Base, `2` = Nivel 1, … `5` = Nivel 4.
 
 ## Añadir un elemento (p. ej. Canon)
