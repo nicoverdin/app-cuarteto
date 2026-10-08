@@ -30,6 +30,11 @@ test('queryTokens: juez/jueces encuentran «judges»', () => {
   for (const q of ['juez', 'jueces']) assert.equal(idx.search(queryTokens(q), 2)[0]?.index, 0, q);
 });
 
+test('queryTokens: formas verbales del glosario (caer, durar)', () => {
+  assert.ok(queryTokens('¿Qué pasa si se cae una patinadora?').includes('fall'));
+  assert.ok(queryTokens('¿Cuánto puede durar el programa?').includes('duration'));
+});
+
 test('queryTokens: traduce palabras clave del glosario', () => {
   const t = queryTokens('¿Qué penalización hay por una caída?');
   assert.ok(t.includes('penalty') && t.includes('fall'));
@@ -100,7 +105,8 @@ test('guard: límite por IP y caché', () => {
 });
 
 const cases: [string, RegExp][] = [
-  ['¿Cuánto puede durar el programa de un cuarteto?', /3 QUARTETS|PENALIZATIONS > 9\.1/],
+  ['¿Cuánto puede durar el programa de un cuarteto?', /4 REQUIREMENTS/], // la duración del programa está en 4.1-4.3,
+  ['¿Qué pasa si se cae una patinadora?', /FALL|QOE|PENALIZATIONS/],
   ['¿Qué requisitos tiene el vestuario?', /COSTUME/],
   ['¿Qué es el elemento canon?', /CANON/],
   ['¿Cuántos elementos tiene que hacer un cuarteto junior?', /JUNIOR QUARTETS/],

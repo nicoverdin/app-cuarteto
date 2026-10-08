@@ -176,7 +176,14 @@ export default function TechnicalScoring() {
       .then(() => (alive ? loadScores(supabase!, sessionId) : null))
       .then(res => {
         if (!alive || !res) return;
+        // Si se editó mientras cargaba, la lectura puede ser anterior a esa escritura: se descarta y se relee al vaciarse la cola.
+        if ((queueRef.current?.pending() ?? 0) > 0) {
+          setReloadKey(k => k + 1);
+          return;
+        }
         const { scores: rows, invalid: bad } = res;
+        // La recarga reconcilió el estado: el aviso de «se comprobará» ya no aplica.
+        setSaveError(cur => (cur?.startsWith('No se pudo confirmar') ? null : cur));
         confirmedRef.current = rows;
         setScores(rows);
         setInvalid(bad);

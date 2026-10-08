@@ -34,8 +34,15 @@ const trimStatic = c =>
     const old = reqs.filter(isStatic);
     return Promise.all(old.slice(0, Math.max(0, old.length - MAX_STATIC)).map(r => c.delete(r)));
   });
+// Refrescar el orden en cada acierto reescribiría MB en cada apertura: como mucho una vez cada 6 h por recurso.
+const TOUCH_EVERY = 6 * 60 * 60 * 1000;
+const touched = new Map();
 const touch = (request, hit) => {
-  caches.open(CACHE).then(c => c.put(request, hit.clone())).catch(() => {});
+  const now = Date.now();
+  if (now - (touched.get(request.url) || 0) < TOUCH_EVERY) return hit;
+  touched.set(request.url, now);
+  const copy = hit.clone(); // síncrono: el cuerpo aún no se ha consumido
+  caches.open(CACHE).then(c => c.put(request, copy)).catch(() => {});
   return hit;
 };
 

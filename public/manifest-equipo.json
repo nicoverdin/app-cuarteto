@@ -1,6 +1,9 @@
 {
   "name": "Programa Cuarteto",
   "short_name": "Cuarteto",
+  "id": "/",
+  "scope": "/",
+  "lang": "es",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#F2F2F7",

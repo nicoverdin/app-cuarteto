@@ -1,6 +1,9 @@
 {
   "name": "Lyra Coach",
   "short_name": "Coach",
+  "id": "/?entrenador=nico",
+  "scope": "/",
+  "lang": "es",
   "start_url": "/?entrenador=nico",
   "display": "standalone",
   "background_color": "#F2F2F7",

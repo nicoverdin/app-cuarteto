@@ -18,6 +18,7 @@ export const viewport: Viewport = {
 
 export const metadata: Metadata = {
   title: "Programa Cuarteto",
+  manifest: "/manifest-equipo.json", // la home lo sustituye por el del entrenador si toca
   description: "Control de correcciones del disco",
 };
 
