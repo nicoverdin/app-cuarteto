@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Score } from './score';
+import { validateScore, type Score } from './score';
 
 export interface TechSession {
   id: string;
@@ -61,13 +61,16 @@ export async function deleteSession(db: SupabaseClient, id: string) {
   if (error) throw error;
 }
 
-export async function loadScores(db: SupabaseClient, sessionId: string): Promise<Score[]> {
+/** Carga las puntuaciones de una sesión. Descarta (y cuenta) las filas que no cumplen el catálogo. */
+export async function loadScores(db: SupabaseClient, sessionId: string): Promise<{ scores: Score[]; ignored: number }> {
   const { data, error } = await db
     .from('puntuaciones_tecnicas')
     .select('elemento, atleta, nivel, qoe, extras')
     .eq('sesion_id', sessionId);
   if (error) throw error;
-  return (data as Row[]).map(toScore);
+  const all = (data as Row[]).map(toScore);
+  const scores = all.filter(s => validateScore(s) === null);
+  return { scores, ignored: all.length - scores.length };
 }
 
 export async function saveScore(db: SupabaseClient, sessionId: string, s: Score) {

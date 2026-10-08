@@ -2,7 +2,7 @@
 import { useId, useState } from 'react';
 import { ChevronDown, GripVertical, Plus, Sparkles } from 'lucide-react';
 import {
-  DndContext, KeyboardSensor, MouseSensor, TouchSensor, closestCenter, useSensor, useSensors, type DragEndEvent,
+  DndContext, KeyboardSensor, MouseSensor, TouchSensor, closestCenter, useSensor, useSensors, type Announcements, type DragEndEvent, type UniqueIdentifier,
 } from '@dnd-kit/core';
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { restrictToParentElement, restrictToVerticalAxis } from '@dnd-kit/modifiers';
@@ -26,6 +26,11 @@ interface Props {
   onDeleteCorrection: (partId: string, correctionId: string) => void;
   onReorderCorrection: (partId: string, activeId: string, overId: string) => void;
 }
+
+// Textos en español para lectores de pantalla durante el arrastre con teclado.
+const DND_INSTRUCTIONS = {
+  draggable: 'Para reordenar, pulsa espacio o Intro, mueve con las flechas arriba y abajo, y pulsa espacio o Intro de nuevo para soltar. Escape cancela.',
+};
 
 interface RowProps {
   correction: Correction;
@@ -82,6 +87,13 @@ export default function RoutineSection({ part, isAdmin, changes, athlete, onAssi
     if (over && active.id !== over.id) onReorderCorrection(part.id, String(active.id), String(over.id));
   };
   const inputId = useId();
+  const labelOf = (id: UniqueIdentifier) => part.corrections.find(c => c.id === id)?.text ?? 'corrección';
+  const announcements: Announcements = {
+    onDragStart: ({ active }) => `Has cogido: ${labelOf(active.id)}.`,
+    onDragOver: ({ active, over }) => (over ? `${labelOf(active.id)} está sobre la posición de ${labelOf(over.id)}.` : undefined),
+    onDragEnd: ({ active, over }) => (over ? `${labelOf(active.id)} se ha soltado en la posición de ${labelOf(over.id)}.` : `${labelOf(active.id)} se ha soltado sin moverse.`),
+    onDragCancel: ({ active }) => `Reordenación cancelada. ${labelOf(active.id)} vuelve a su sitio.`,
+  };
 
   // "Las mías": solo las correcciones que le tocan a la atleta elegida (la entrenadora lo ve todo).
   const visible = isAdmin ? part.corrections : part.corrections.filter(c => isFor(c, athlete));
@@ -121,7 +133,7 @@ export default function RoutineSection({ part, isAdmin, changes, athlete, onAssi
             <ChevronDown aria-hidden="true" className={`w-6 h-6 text-ink-muted transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`} />
             <span className="text-[20px] font-bold text-ink tracking-tight">{part.name}</span>
             {changeCount > 0 && (
-              <span className="shrink-0 rounded-full bg-accent px-2 py-0.5 text-[11px] font-bold text-on-accent">
+              <span className="shrink-0 rounded-full bg-accent px-2 py-0.5 text-xs font-bold text-on-accent">
                 {changeCount === 1 ? '1 novedad' : `${changeCount} novedades`}
               </span>
             )}
@@ -151,6 +163,7 @@ export default function RoutineSection({ part, isAdmin, changes, athlete, onAssi
               sensors={sensors}
               collisionDetection={closestCenter}
               modifiers={[restrictToVerticalAxis, restrictToParentElement]}
+              accessibility={{ announcements, screenReaderInstructions: DND_INSTRUCTIONS }}
               onDragEnd={handleDragEnd}
             >
               <SortableContext items={visible.map(c => c.id)} strategy={verticalListSortingStrategy}>
@@ -175,8 +188,6 @@ export default function RoutineSection({ part, isAdmin, changes, athlete, onAssi
                 correction={corr}
                 isAdmin={false}
                 change={changes[corr.id]}
-                onUpdate={() => {}}
-                onDelete={() => {}}
               />
             ))
           )}

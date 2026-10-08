@@ -11,8 +11,9 @@ const STATUS_ICON = { red: X, yellow: Clock, green: Check, pink: Heart };
 
 interface Props {
   correction: Correction;
-  onUpdate: (newStatus: Correction['status']) => void;
-  onDelete: () => void;
+  // Solo los usa el entrenador (isAdmin); la vista de alumna es de solo lectura.
+  onUpdate?: (newStatus: Correction['status']) => void;
+  onDelete?: () => void;
   onAssign?: (who: string[]) => void;
   // Asa para arrastrar (solo en la lista de la rutina, para reordenar).
   handle?: ReactNode;
@@ -30,7 +31,7 @@ export default function CorrectionItem({ correction, onUpdate, onDelete, onAssig
   const who = correction.who?.length ? correction.who : null;
   const mastered = correction.status === 'pink' && correction.masteredAt ? agoLabel(correction.masteredAt) : null;
   const meta = (who || mastered) && (
-    <span className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] font-medium text-ink-soft">
+    <span className="mt-1 flex flex-wrap items-center gap-1.5 text-xs font-medium text-ink-soft">
       {who && <span>Para: {who.join(', ')}</span>}
       {mastered && <span suppressHydrationWarning>· Dominada {mastered}</span>}
     </span>
@@ -43,7 +44,7 @@ export default function CorrectionItem({ correction, onUpdate, onDelete, onAssig
   );
 
   const chip = change && (
-    <span className="mr-2 shrink-0 rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-accent">
+    <span className="mr-2 shrink-0 rounded-full bg-accent/15 px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-accent">
       {change === 'new' ? 'Nuevo' : 'Actualizado'}
     </span>
   );
@@ -63,7 +64,7 @@ export default function CorrectionItem({ correction, onUpdate, onDelete, onAssig
       {isAdmin ? (
         <button
           type="button"
-          onClick={() => onUpdate(nextStatus)}
+          onClick={() => onUpdate?.(nextStatus)}
           aria-label={`${correction.text}. Estado: ${info.label}. Pulsa para cambiar a ${STATUS_INFO[nextStatus].label}`}
           className="flex-1 flex items-center justify-between py-2 pr-2 text-left rounded-xl transition-transform active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
@@ -96,7 +97,7 @@ export default function CorrectionItem({ correction, onUpdate, onDelete, onAssig
       {isAdmin && (
         <button
           type="button"
-          onClick={onDelete}
+          onClick={() => onDelete?.()}
           className="w-11 h-11 ml-1 flex items-center justify-center text-ink-muted hover:text-danger active:text-danger transition-colors rounded-full focus-visible:outline-2 focus-visible:outline-accent"
           aria-label={`Eliminar corrección: ${correction.text}`}
         >

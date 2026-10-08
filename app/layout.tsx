@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
+import ServiceWorkerRegister from "../components/ServiceWorkerRegister";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -27,6 +28,7 @@ export default function RootLayout({
   return (
     <html lang="es" className={inter.variable}>
       <body className="font-sans antialiased bg-page text-ink selection:bg-accent selection:text-on-accent">
+        <ServiceWorkerRegister />
         {children}
       </body>
     </html>

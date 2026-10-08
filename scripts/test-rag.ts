@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs';
 import { test } from 'node:test';
 import type Anthropic from '@anthropic-ai/sdk';
 import { ask, parseAnswer, type AskDeps } from '../lib/rag/ask';
-import { allowRequest, cacheGet, cacheSet, resetGuards } from '../lib/rag/guard';
+import { acquireSlot, allowRequest, authBlocked, cacheGet, cacheSet, clientKey, recordAuthFailure, refundRequest, releaseSlot, resetGuards } from '../lib/rag/guard';
 import { Bm25Index } from '../lib/rag/bm25';
 import { retrieve } from '../lib/rag/retrieve';
 import { queryTokens, tokenize } from '../lib/rag/text';
@@ -19,6 +19,17 @@ test('tokenize: sin acentos, sin palabras vacías, con raíz', () => {
   assert.deepEqual(tokenize('Las penalizaciones del Árbitro'), ['penalizacion', 'arbitro']);
 });
 
+test('tokenize: singular y plural comparten raíz', () => {
+  for (const [a, b] of [['rule', 'rules'], ['judge', 'judges'], ['score', 'scores'], ['penalty', 'penalties'], ['box', 'boxes'], ['score', 'scored']]) {
+    assert.deepEqual(tokenize(a), tokenize(b), `${a} / ${b}`);
+  }
+});
+
+test('queryTokens: juez/jueces encuentran «judges»', () => {
+  const idx = new Bm25Index([tokenize('the judges panel'), tokenize('music time limit')]);
+  for (const q of ['juez', 'jueces']) assert.equal(idx.search(queryTokens(q), 2)[0]?.index, 0, q);
+});
+
 test('queryTokens: traduce palabras clave del glosario', () => {
   const t = queryTokens('¿Qué penalización hay por una caída?');
   assert.ok(t.includes('penalty') && t.includes('fall'));
@@ -28,6 +39,32 @@ test('BM25 ordena por relevancia', () => {
   const idx = new Bm25Index([tokenize('costume rules for skaters'), tokenize('music time limit'), tokenize('costume')]);
   const [first] = idx.search(tokenize('costume'), 3);
   assert.equal(first.index, 2);
+});
+
+test('guard: clave de cliente ignora x-forwarded-for por defecto', () => {
+  const h = new Headers({ 'x-forwarded-for': '9.9.9.9, 8.8.8.8' });
+  delete process.env.REGLAMENTO_TRUSTED_PROXY_HOPS;
+  assert.equal(clientKey(h), 'directo');
+  process.env.REGLAMENTO_TRUSTED_PROXY_HOPS = '1';
+  assert.equal(clientKey(h), '8.8.8.8');
+  delete process.env.REGLAMENTO_TRUSTED_PROXY_HOPS;
+});
+
+test('guard: devolución, concurrencia y fallos de acceso', () => {
+  resetGuards();
+  process.env.REGLAMENTO_HOURLY_LIMIT = '1';
+  assert.ok(allowRequest('a'));
+  refundRequest('a');
+  assert.ok(allowRequest('a'));
+  delete process.env.REGLAMENTO_HOURLY_LIMIT;
+  assert.ok(acquireSlot() && acquireSlot() && acquireSlot());
+  assert.equal(acquireSlot(), false);
+  releaseSlot();
+  assert.ok(acquireSlot());
+  for (let i = 0; i < 10; i++) recordAuthFailure('x');
+  assert.ok(authBlocked('x'));
+  assert.equal(authBlocked('y'), false);
+  resetGuards();
 });
 
 test('guard: límite por IP y caché', () => {

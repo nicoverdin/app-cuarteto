@@ -11,13 +11,18 @@ const STOPWORDS = new Set(
 
 const strip = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '');
 
+// Raíz simple y simétrica: singular y plural (y -ed/-ing) acaban en la misma raíz
+// (rule/rules → rul, judge/judges → judg, score/scored/scoring → scor).
 function stem(t: string): string {
-  if (t.length > 5 && t.endsWith('ing')) return t.slice(0, -3);
-  if (t.length > 4 && t.endsWith('ies')) return t.slice(0, -3) + 'y';
-  if (t.length > 4 && t.endsWith('es')) return t.slice(0, -2);
-  if (t.length > 3 && t.endsWith('ed')) return t.slice(0, -2);
-  if (t.length > 3 && t.endsWith('s')) return t.slice(0, -1);
-  return t;
+  let w = t;
+  if (w.length > 4 && w.endsWith('ies')) return w.slice(0, -3) + 'y';
+  if (w.length > 4 && w.endsWith('ones')) w = w.slice(0, -2); // español: penalizaciones → penalizacion
+  else if (w.length > 4 && /(?:[sxz]|ch|sh)es$/.test(w)) w = w.slice(0, -2);
+  else if (w.length > 3 && w.endsWith('s') && !w.endsWith('ss')) w = w.slice(0, -1);
+  if (w.length > 5 && w.endsWith('ing')) w = w.slice(0, -3);
+  else if (w.length > 4 && w.endsWith('ed')) w = w.slice(0, -2);
+  if (w.length > 3 && w.endsWith('e')) w = w.slice(0, -1);
+  return w;
 }
 
 export function tokenize(text: string): string[] {

@@ -1,9 +1,10 @@
+import { daysSince } from '../lib/history';
+
 const time = new Intl.DateTimeFormat('es-ES', { hour: '2-digit', minute: '2-digit' });
 const day = new Intl.DateTimeFormat('es-ES', { day: 'numeric', month: 'short' });
 
-function label(date: Date, now = new Date()) {
-  const startOf = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const diffDays = Math.round((startOf(now) - startOf(date)) / 86_400_000);
+function label(date: Date) {
+  const diffDays = daysSince(date);
   const when = diffDays === 0 ? 'hoy' : diffDays === 1 ? 'ayer' : `el ${day.format(date)}`;
   return `Actualizado ${when}, ${time.format(date)}`;
 }

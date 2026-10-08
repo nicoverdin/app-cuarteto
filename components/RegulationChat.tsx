@@ -135,11 +135,17 @@ export default function RegulationChat() {
   const inputId = useId();
   const codeId = useId();
 
-  const submit = async (q: string) => {
+  const abortRef = useRef<AbortController | null>(null);
+
+  const submit = async (q: string, queryMode: Mode = mode) => {
     const text = q.trim();
     if (text.length < 3 || loading) return;
     const id = nextId.current++;
-    const base: Item = { id, question: text, mode };
+    const base: Item = { id, question: text, mode: queryMode };
+    const controller = new AbortController();
+    abortRef.current = controller;
+    // Tiempo máximo de espera (algo por encima del límite del servidor).
+    const timer = setTimeout(() => controller.abort(new DOMException('timeout', 'TimeoutError')), 70_000);
     setItems(prev => [...prev, base]);
     setQuestion('');
     setLoading(true);
@@ -147,19 +153,31 @@ export default function RegulationChat() {
       const res = await fetch('/api/reglamento', {
         method: 'POST',
         headers: { 'content-type': 'application/json', ...(code ? { 'x-access-code': code } : {}) },
-        body: JSON.stringify({ question: text, mode }),
+        body: JSON.stringify({ question: text, mode: queryMode }),
+        signal: controller.signal,
       });
-      const data = await res.json();
+      // Un 502/504 puede traer HTML: no se asume JSON.
+      const data = await res.json().catch(() => null);
       if (res.status === 401) {
         setNeedsCode(true);
         throw new Error('Introduce el código de acceso para consultar.');
       }
-      if (!res.ok) throw new Error(data?.message ?? 'No se pudo consultar.');
+      if (!res.ok) throw new Error(data?.message ?? 'El servidor no responde ahora mismo. Inténtalo de nuevo en un momento.');
+      if (!data) throw new Error('Respuesta no válida del servidor. Inténtalo de nuevo.');
       setItems(prev => prev.map(it => (it.id === id ? { ...it, result: data } : it)));
     } catch (e) {
-      const message = e instanceof Error ? e.message : 'No se pudo consultar.';
+      const reason = controller.signal.reason as { name?: string } | undefined;
+      const message = controller.signal.aborted
+        ? reason?.name === 'TimeoutError'
+          ? 'La consulta ha tardado demasiado. Inténtalo de nuevo.'
+          : 'Consulta cancelada.'
+        : e instanceof Error && !(e instanceof TypeError)
+          ? e.message
+          : 'No se pudo conectar con el servidor.';
       setItems(prev => prev.map(it => (it.id === id ? { ...it, error: message } : it)));
     } finally {
+      clearTimeout(timer);
+      abortRef.current = null;
       setLoading(false);
     }
   };
@@ -263,10 +281,20 @@ export default function RegulationChat() {
             <p className="rounded-2xl bg-accent/10 px-3 py-2 text-sm font-medium text-ink">{item.question}</p>
             {!item.result && !item.error ? (
               <p role="status" className="text-sm text-ink-muted">
-                {item.mode === 'buscar' ? 'Buscando…' : 'Consultando el reglamento…'}
+                {item.mode === 'buscar' ? 'Buscando…' : 'Consultando el reglamento…'}{' '}
+                <button type="button" onClick={() => abortRef.current?.abort()} className="font-semibold text-accent underline focus-visible:outline-2 focus-visible:outline-accent">
+                  Cancelar
+                </button>
               </p>
             ) : (
-              <AnswerView item={item} />
+              <>
+                <AnswerView item={item} />
+                {item.error && !loading && (
+                  <button type="button" onClick={() => submit(item.question, item.mode)} className="text-xs font-semibold text-accent underline focus-visible:outline-2 focus-visible:outline-accent">
+                    Reintentar
+                  </button>
+                )}
+              </>
             )}
           </article>
         ))}

@@ -7,9 +7,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
     "test:rag": "tsx --test scripts/test-rag.ts",
     "test:technical": "tsx --test scripts/test-technical.ts",
-    "reglamento:index": "node scripts/build-regulation-index.mjs"
+    "reglamento:index": "node scripts/build-regulation-index.mjs",
+    "test": "tsx --test scripts/test-*.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",
@@ -19,17 +21,17 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@supabase/supabase-js": "^2.116.0",
     "lucide-react": "^1.42.0",
-    "next": "16.3.4",
+    "next": "16.4.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@types/node": "^24.19.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.3.4",
+    "eslint-config-next": "16.4.0",
     "tailwindcss": "^4",
     "tsx": "^4.23.15",
     "typescript": "^5"

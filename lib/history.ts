@@ -4,10 +4,13 @@ const DAY = 86_400_000;
 const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 const startOfWeek = (d: Date) => startOfDay(d) - ((d.getDay() + 6) % 7) * DAY; // lunes
 
+/** Días naturales transcurridos desde `date` hasta `now`. */
+export const daysSince = (date: Date, now = new Date()) => Math.round((startOfDay(now) - startOfDay(date)) / DAY);
+
 export function agoLabel(iso: string, now = new Date()) {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return null;
-  const days = Math.round((startOfDay(now) - startOfDay(date)) / DAY);
+  const days = daysSince(date, now);
   if (days <= 0) return 'hoy';
   if (days === 1) return 'ayer';
   return `hace ${days} días`;

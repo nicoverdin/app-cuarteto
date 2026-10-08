@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { getStore } from './store';
 import { retrieve } from './retrieve';
 import { NOT_FOUND_RE, REWRITE_SYSTEM, SYSTEM } from './prompts';
 import {
@@ -30,7 +31,12 @@ export interface AskDeps {
 export function createClient() {
   // Lee ANTHROPIC_API_KEY. Las claves no asociadas a un workspace necesitan indicar cuál usar.
   const workspace = process.env.ANTHROPIC_WORKSPACE_ID;
-  return new Anthropic(workspace ? { defaultHeaders: { 'anthropic-workspace-id': workspace } } : {});
+  // Sin timeout el SDK espera 10 min: se acota y se reintenta una sola vez.
+  return new Anthropic({
+    timeout: 45_000,
+    maxRetries: 1,
+    ...(workspace ? { defaultHeaders: { 'anthropic-workspace-id': workspace } } : {}),
+  });
 }
 
 export const defaultDeps: AskDeps = {
@@ -115,9 +121,13 @@ export function parseAnswer(message: BetaMessage, hits: Hit[]) {
 }
 
 export async function ask(question: string, mode: Mode, deps: AskDeps = defaultDeps): Promise<AskResult> {
+  // Carga el índice primero: si falta, no se gasta la reformulación.
+  getStore();
+
   // Reformulación en inglés (opcional): mejora la búsqueda léxica sobre reglamentos en inglés.
+  // El modo «buscar» no usa IA ni Voyage (coste cero): solo BM25 con el glosario.
   let english = '';
-  if (process.env.ANTHROPIC_API_KEY) {
+  if (mode !== 'buscar' && process.env.ANTHROPIC_API_KEY) {
     try {
       english = await deps.rewrite(question);
     } catch {
@@ -125,7 +135,7 @@ export async function ask(question: string, mode: Mode, deps: AskDeps = defaultD
     }
   }
 
-  const { hits, kind } = await retrieve(question, TOP_K[mode], english);
+  const { hits, kind } = await retrieve(question, TOP_K[mode], english, mode !== 'buscar');
   const passages = hits.map(toPassage);
 
   if (mode === 'buscar') {

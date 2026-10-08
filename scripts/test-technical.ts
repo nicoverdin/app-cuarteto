@@ -97,3 +97,50 @@ test('validateScore: rechaza datos fuera de catálogo', () => {
   assert.ok(validateScore(s('line', 'A', 1, 5)));
   assert.ok(validateScore(s('traveling', 'A', 1, 0, ['mirror']))); // extras solo en grupo
 });
+
+test('catálogo: valores base de la tabla oficial 2026 (contraste)', () => {
+  const bases = (id: string) => el(id).levels.map(l => l.base);
+  assert.deepEqual(bases('traveling'), [0, 2.5, 3.5, 4.5, 6, 6.5]);
+  assert.deepEqual(bases('line'), [0, 3, 4, 5.5, 7.1, 9.3]);
+  assert.deepEqual(bases('cluster'), [0, 2, 3.5, 5, 6.8, 8.3]);
+});
+
+test('summarize: nivel manual de grupo 0 manda sobre el derivado y vale 0', () => {
+  const r = summarize([s('cluster', null, 0, 2), s('cluster', 'A', 5), s('cluster', 'B', 5), s('cluster', 'C', 5)], ATHLETES);
+  assert.equal(r.elements.cluster.derivedLevel, 5);
+  assert.equal(r.elements.cluster.groupLevel, 0);
+  assert.equal(r.elements.cluster.groupLevelIsAuto, false);
+  assert.equal(r.elements.cluster.group?.total, 0);
+  assert.equal(r.technicalTotal, 0);
+});
+
+test('summarize: grupo con nivel null sin derivado pero con QOE no tiene valor', () => {
+  const r = summarize([s('line', null, null, 2), s('line', 'A', 3)], ATHLETES);
+  assert.equal(r.elements.line.derivedLevel, null);
+  assert.equal(r.elements.line.group, null);
+  assert.equal(r.technicalTotal, 0);
+  assert.equal(r.ignored, 0);
+});
+
+test('bonus con QOE negativo: el bonus es fijo y no se reduce', () => {
+  const v = elementValue(el('traveling'), 3, -3, ['crossing']); // 4.5 - 1.2 + 2
+  assert.equal(v.total, 5.3);
+  assert.equal(v.qoe, -1.2);
+  assert.equal(v.bonus, 2);
+});
+
+test('summarize: ignora filas inválidas sin lanzar y las cuenta', () => {
+  const scores = [
+    s('line', null, 99), // nivel fuera del catálogo
+    s('traveling', null, 2, 0, ['inventada']), // extra inexistente
+    s('line', 'A', 1, 7), // QOE fuera de rango
+    s('foo', null, 1), // elemento desconocido
+    s('cluster', null, 2), // válida
+  ];
+  const r = summarize(scores, ATHLETES);
+  assert.equal(r.ignored, 4);
+  assert.equal(r.elements.line.group, null);
+  assert.equal(r.elements.traveling.group, null);
+  assert.equal(r.elements.cluster.group?.total, 3.5);
+  assert.equal(r.technicalTotal, 3.5);
+});

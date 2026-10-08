@@ -2,11 +2,12 @@
 --
 -- ESTADO: preparada, NO aplicada. La ruta /tecnica avisa de que faltan las tablas hasta que se ejecute.
 -- Cómo ejecutarla: Supabase → SQL Editor → pegar y ejecutar (una transacción: si algo falla no se cambia nada).
+-- Es re-ejecutable: no falla ni pierde datos si ya se aplicó antes (también sirve para migrar versiones anteriores).
 -- Deshacer: drop table public.puntuaciones_tecnicas, public.sesiones_tecnicas cascade;
 
 begin;
 
-create table public.sesiones_tecnicas (
+create table if not exists public.sesiones_tecnicas (
   id        uuid primary key default gen_random_uuid(),
   nombre    text not null check (char_length(btrim(nombre)) between 1 and 80),
   fecha     date not null default current_date,
@@ -19,7 +20,7 @@ create table public.sesiones_tecnicas (
 -- nivel = índice del nivel en lib/technical/catalog.ts (0 = sin nivel, 1 = Base, 2 = Nivel 1 …).
 -- En el grupo, nivel null = "automático" (se deriva de los niveles de las patinadoras).
 -- Los rangos reales (según elemento) los valida la app con el catálogo; aquí solo los límites duros.
-create table public.puntuaciones_tecnicas (
+create table if not exists public.puntuaciones_tecnicas (
   sesion_id  uuid not null references public.sesiones_tecnicas(id) on delete cascade,
   elemento   text not null,
   atleta     text not null default '',
@@ -32,7 +33,17 @@ create table public.puntuaciones_tecnicas (
   check (atleta = '' or extras = '{}')
 );
 
-create function public.puntuaciones_tecnicas_touch()
+-- Migración de versiones anteriores -----------------------------------------------------------
+-- (sin "elementos" en sesiones_tecnicas, o sin el check de ids). Es seguro repetirla.
+alter table public.sesiones_tecnicas add column if not exists elementos text[] not null default '{}';
+
+-- "elementos" solo puede tener ids no vacíos (sin atarlos al catálogo, que vive en la app).
+alter table public.sesiones_tecnicas drop constraint if exists sesiones_tecnicas_elementos_ids;
+alter table public.sesiones_tecnicas add constraint sesiones_tecnicas_elementos_ids
+  check (array_position(elementos, null) is null and array_position(elementos, '') is null);
+
+-- Marca de última actualización -----------------------------------------------------------------
+create or replace function public.puntuaciones_tecnicas_touch()
 returns trigger
 language plpgsql
 as $$
@@ -42,6 +53,7 @@ begin
 end;
 $$;
 
+drop trigger if exists puntuaciones_tecnicas_touch on public.puntuaciones_tecnicas;
 create trigger puntuaciones_tecnicas_touch
   before update on public.puntuaciones_tecnicas
   for each row execute function public.puntuaciones_tecnicas_touch();
@@ -49,6 +61,11 @@ create trigger puntuaciones_tecnicas_touch
 -- Seguridad (RLS) ------------------------------------------------------------------------------
 alter table public.sesiones_tecnicas      enable row level security;
 alter table public.puntuaciones_tecnicas  enable row level security;
+
+drop policy if exists "lectura publica sesiones"       on public.sesiones_tecnicas;
+drop policy if exists "lectura publica puntuaciones"   on public.puntuaciones_tecnicas;
+drop policy if exists "escritura abierta sesiones"     on public.sesiones_tecnicas;
+drop policy if exists "escritura abierta puntuaciones" on public.puntuaciones_tecnicas;
 
 create policy "lectura publica sesiones"       on public.sesiones_tecnicas     for select to anon, authenticated using (true);
 create policy "lectura publica puntuaciones"   on public.puntuaciones_tecnicas for select to anon, authenticated using (true);
@@ -60,6 +77,3 @@ create policy "escritura abierta sesiones"     on public.sesiones_tecnicas     f
 create policy "escritura abierta puntuaciones" on public.puntuaciones_tecnicas for all to anon using (true) with check (true);
 
 commit;
-
--- Si ya habías ejecutado una versión anterior de este archivo (sin "elementos"), ejecuta solo esto:
---   alter table public.sesiones_tecnicas add column if not exists elementos text[] not null default '{}';

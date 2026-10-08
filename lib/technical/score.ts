@@ -94,9 +94,13 @@ export interface Summary {
   technicalTotal: number;
   /** Suma de los valores individuales (seguimiento). */
   athleteTotals: Record<string, number>;
+  /** Filas descartadas por no cumplir el catálogo (nivel, QOE o extra inexistentes). */
+  ignored: number;
 }
 
-export function summarize(scores: readonly Score[], athletes: readonly string[], catalog: readonly TechElement[] = CATALOG): Summary {
+export function summarize(allScores: readonly Score[], athletes: readonly string[], catalog: readonly TechElement[] = CATALOG): Summary {
+  // Una fila inconsistente en la base no debe tumbar la página: se ignora y se cuenta.
+  const scores = allScores.filter(s => validateScore(s) === null);
   const elements: Record<string, ElementSummary> = {};
   const athleteTotals: Record<string, number> = Object.fromEntries(athletes.map(a => [a, 0]));
   let technicalTotal = 0;
@@ -132,7 +136,7 @@ export function summarize(scores: readonly Score[], athletes: readonly string[],
       athletes: athleteValues,
     };
   }
-  return { elements, technicalTotal, athleteTotals };
+  return { elements, technicalTotal, athleteTotals, ignored: allScores.length - scores.length };
 }
 
 /** ¿La puntuación es válida contra el catálogo? Devuelve el motivo si no. */

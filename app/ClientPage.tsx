@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback, useId, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { UserCheck, WifiOff, Sparkles, BookOpen, ClipboardList } from 'lucide-react';
 import { RoutinePart, ColorState } from '../types';
@@ -13,7 +13,7 @@ import { isFor, useAthlete } from '../lib/athletes';
 import { MainProgressBar, StatusLegend } from '../components/ProgressCharts';
 import { supabase, fetchRoutine } from '../lib/supabase';
 import { diffAgainst, getSeen, getServerSeen, markSeen, reloadSeenBaseline, subscribeSeen } from '../lib/changes';
-import { initialData, isValidRoutine, newCorrectionId, readCachedRoutine, readCachedUpdatedAt, writeCachedRoutine } from '../lib/routine';
+import { initialData, inverseMutation, isValidRoutine, newCorrectionId, readCachedRoutine, readCachedUpdatedAt, writeCachedRoutine, type Mutation } from '../lib/routine';
 
 interface Toast {
   message: string;
@@ -21,23 +21,43 @@ interface Toast {
   action?: { label: string; run: () => void };
 }
 
-type Mutation = (routine: RoutinePart[]) => RoutinePart[];
-
 const isCoachUrl = () =>
   typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('entrenador') === 'nico';
-
-// Registra el service worker (solo producción) para poder abrir la app sin conexión.
-function useServiceWorker() {
-  useEffect(() => {
-    if (process.env.NODE_ENV === 'production' && 'serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(() => {});
-    }
-  }, []);
-}
 
 interface Props {
   initialRoutine: RoutinePart[] | null;
   initialUpdatedAt: string | null;
+}
+
+const VIEWS = [['rutina', 'Rutina'], ['hoy', 'Para trabajar']] as const;
+type View = (typeof VIEWS)[number][0];
+
+// ¿La fecha `a` es anterior o igual a `b`? Si alguna no se puede interpretar, se considera que no.
+const isOlderOrEqual = (a: string, b: string) => {
+  const x = Date.parse(a);
+  const y = Date.parse(b);
+  return !Number.isNaN(x) && !Number.isNaN(y) && x <= y;
+};
+
+function ToastBox({ toast }: { toast: Toast }) {
+  return (
+    <div
+      className={`pointer-events-auto w-full flex items-center justify-between gap-3 rounded-2xl px-4 py-3 text-sm font-medium shadow-lg text-on-toast ${
+        toast.kind === 'error' ? 'bg-red-700 !text-white' : 'bg-toast'
+      }`}
+    >
+      <span>{toast.message}</span>
+      {toast.action && (
+        <button
+          type="button"
+          onClick={toast.action.run}
+          className="font-bold underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-current"
+        >
+          {toast.action.label}
+        </button>
+      )}
+    </div>
+  );
 }
 
 export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) {
@@ -50,32 +70,39 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
   const [isOffline, setIsOffline] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [toast, setToast] = useState<Toast | null>(null);
-  const [view, setView] = useState<'rutina' | 'hoy'>('rutina');
+  const [view, setView] = useState<View>('rutina');
   const athlete = useAthlete();
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tabsId = useId();
 
-  useServiceWorker();
+  // Estado vigente (síncrono, para encadenar guardados sin esperar al render) y control de concurrencia.
+  const liveRef = useRef(routine);
+  const updatedAtRef = useRef<string | null>(initialUpdatedAt);
+  const pendingRef = useRef(0); // guardados en curso
+  const epochRef = useRef(0); // cambia con cada guardado: invalida lecturas iniciadas antes
+  const staleRef = useRef(false); // llegó un dato del servidor mientras se guardaba: se relee al terminar
+  const queueRef = useRef<Promise<void>>(Promise.resolve());
+  const freshRef = useRef(!!initialRoutine); // ¿lo que se ve viene del servidor (no de la copia local)?
+  const loadRef = useRef<((silent: boolean) => Promise<void>) | null>(null);
 
   // Novedades desde la última vez que la atleta usó la app (el entrenador no las necesita).
   const seenRaw = useSyncExternalStore(subscribeSeen, getSeen, getServerSeen);
   const changes = useMemo(() => (isAdmin ? {} : diffAgainst(seenRaw, routine)), [isAdmin, seenRaw, routine]);
-  const routineRef = useRef(routine);
-  useEffect(() => {
-    routineRef.current = routine;
-  }, [routine]);
   useEffect(() => {
     if (isAdmin) return;
-    // Al salir se guarda lo que se ha visto; al volver, la base de comparación se actualiza.
+    // Al salir se guarda lo que se ha visto (solo si son datos frescos del servidor); al volver, la base se actualiza.
+    const saveSeen = () => {
+      if (freshRef.current) markSeen(liveRef.current);
+    };
     const onVisibility = () => {
-      if (document.visibilityState === 'hidden') markSeen(routineRef.current);
+      if (document.visibilityState === 'hidden') saveSeen();
       else reloadSeenBaseline();
     };
-    const onPageHide = () => markSeen(routineRef.current);
     document.addEventListener('visibilitychange', onVisibility);
-    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('pagehide', saveSeen);
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('pagehide', saveSeen);
     };
   }, [isAdmin]);
 
@@ -85,10 +112,30 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
     toastTimer.current = setTimeout(() => setToast(null), t.action ? 6000 : 3000);
   }, []);
 
-  // Guardamos la última versión conocida para poder abrir la app sin conexión.
-  useEffect(() => {
-    if (initialRoutine) writeCachedRoutine(initialRoutine, initialUpdatedAt);
-  }, [initialRoutine, initialUpdatedAt]);
+  const commit = useCallback((next: RoutinePart[]) => {
+    liveRef.current = next;
+    setRoutine(next);
+  }, []);
+
+  const setMeta = useCallback((at: string | null) => {
+    updatedAtRef.current = at;
+    setUpdatedAt(at);
+  }, []);
+
+  // Aplica datos llegados del servidor (carga, refresco o Realtime) sin pisar guardados en vuelo
+  // ni versiones más recientes que la que ya se muestra.
+  const applyServer = useCallback((data: RoutinePart[], at: string | null) => {
+    if (pendingRef.current > 0) {
+      staleRef.current = true;
+      return;
+    }
+    freshRef.current = true;
+    const current = updatedAtRef.current;
+    if (at && current && isOlderOrEqual(at, current)) return;
+    commit(data);
+    setMeta(at);
+    writeCachedRoutine(data, at);
+  }, [commit, setMeta]);
 
   // Carga inicial (si el servidor no pudo), refresco al volver a la app y cambios en vivo.
   useEffect(() => {
@@ -97,27 +144,43 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
 
     // silent: refrescos en segundo plano, que nunca rompen lo que ya se ve.
     const load = async (silent: boolean) => {
+      const epoch = epochRef.current;
       try {
         const row = await fetchRoutine(client);
         // Un fallo de red/permisos NUNCA debe sobrescribir los datos guardados.
-        if (row) {
-          setRoutine(row.data);
-          setUpdatedAt(row.updatedAt);
-          writeCachedRoutine(row.data, row.updatedAt);
+        if (epoch !== epochRef.current) {
+          // Hubo guardados mientras se leía: el resultado puede ser anterior; se relee al terminar.
+          staleRef.current = true;
+        } else if (row) {
+          applyServer(row.data, row.updatedAt);
         } else if (!silent) {
           // La BD está realmente vacía: usamos el respaldo y solo el entrenador lo persiste.
-          setRoutine(initialData);
+          commit(initialData);
           if (isCoachUrl()) {
-            await client.from('disco_cuarteto').update({ data: initialData }).eq('id', 1);
+            const { error } = await client.from('disco_cuarteto').upsert({ id: 1, data: initialData }).select('id');
+            if (error) showToast({ message: 'No se pudo guardar el programa inicial.', kind: 'error' });
           }
         }
         setIsOffline(false);
       } catch {
-        if (silent) return;
         const cached = readCachedRoutine();
+        const cachedAt = readCachedUpdatedAt();
+        const current = updatedAtRef.current;
+        // La copia local es la más reciente que conocemos (la página pudo venir de una caché antigua).
+        const cachedIsNewer = cachedAt ? !current || !isOlderOrEqual(cachedAt, current) : !current;
+        if (silent) {
+          setIsOffline(true);
+          if (cached && cachedIsNewer && pendingRef.current === 0) {
+            freshRef.current = false;
+            commit(cached);
+            setMeta(cachedAt);
+          }
+          return;
+        }
         if (cached) {
-          setRoutine(cached);
-          setUpdatedAt(readCachedUpdatedAt());
+          freshRef.current = false;
+          commit(cached);
+          setMeta(cachedAt);
           setIsOffline(true);
         } else {
           setLoadError(true);
@@ -126,8 +189,10 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
         if (!silent) setIsLoading(false);
       }
     };
+    loadRef.current = load;
 
-    if (!initialRoutine || reloadKey > 0) load(false);
+    // Con datos del servidor también se comprueba en silencio: guarda la copia local y detecta que no hay conexión.
+    load(!!initialRoutine && reloadKey === 0);
 
     const refresh = () => {
       if (document.visibilityState === 'visible') load(true);
@@ -143,16 +208,13 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
         { event: 'UPDATE', schema: 'public', table: 'disco_cuarteto', filter: 'id=eq.1' },
         payload => {
           const row = payload.new as { data?: unknown; updated_at?: string | null };
-          if (isValidRoutine(row.data)) {
-            setRoutine(row.data);
-            setUpdatedAt(row.updated_at ?? null);
-            writeCachedRoutine(row.data, row.updated_at);
-          }
+          if (isValidRoutine(row.data)) applyServer(row.data, row.updated_at ?? null);
         }
       )
       .subscribe();
 
     return () => {
+      loadRef.current = null;
       document.removeEventListener('visibilitychange', refresh);
       window.removeEventListener('online', refresh);
       client.removeChannel(channel);
@@ -166,34 +228,79 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
     setReloadKey(k => k + 1);
   };
 
-  // Guardado optimista con rollback. Antes de escribir se relee la versión más reciente de la BD
-  // y se aplica el cambio sobre ella, para no pisar lo que otro dispositivo haya cambiado.
-  const applyChange = async (mutate: Mutation, okMessage: string, undoable = false) => {
-    const previous = routine;
-    setRoutine(mutate(previous));
-    if (!isAdmin || !supabase) return;
-
-    try {
-      const base = (await fetchRoutine(supabase))?.data ?? previous;
+  // Escribe en la BD aplicando `mutate` sobre la última versión leída. Si la columna updated_at existe, la
+  // escritura es condicional a que nadie haya guardado entretanto (se reintenta); la escritura debe afectar a 1 fila.
+  const persist = async (client: NonNullable<typeof supabase>, mutate: Mutation, fallback: RoutinePart[]) => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const row = await fetchRoutine(client);
+      const base = row?.data ?? fallback;
       const next = mutate(base);
-      const { error } = await supabase.from('disco_cuarteto').update({ data: next }).eq('id', 1);
-      if (error) throw error;
 
-      const savedAt = new Date().toISOString();
-      setRoutine(next);
-      setUpdatedAt(savedAt);
-      writeCachedRoutine(next, savedAt);
-      showToast({
-        message: okMessage,
-        kind: 'ok',
-        action: undoable
-          ? { label: 'Deshacer', run: () => { setToast(null); applyChange(() => base, 'Cambio deshecho'); } }
-          : undefined,
-      });
-    } catch {
-      setRoutine(previous);
-      showToast({ message: 'No se pudo guardar. Se ha revertido el cambio.', kind: 'error' });
+      if (!row) {
+        // BD vacía: se crea la fila.
+        const { data, error } = await client.from('disco_cuarteto').upsert({ id: 1, data: next }).select('id');
+        if (error) throw error;
+        if (data?.length !== 1) throw new Error('No se guardó ninguna fila');
+        return { base, next, savedAt: new Date().toISOString() };
+      }
+
+      let query = client.from('disco_cuarteto').update({ data: next }).eq('id', 1);
+      if (row.updatedAt) query = query.eq('updated_at', row.updatedAt);
+      const { data, error } = await query.select(row.updatedAt ? 'id, updated_at' : 'id');
+      if (error) throw error;
+      if (data?.length === 1) {
+        const saved = (data[0] as unknown as { updated_at?: string }).updated_at;
+        return { base, next, savedAt: saved ?? new Date().toISOString() };
+      }
+      if (!row.updatedAt) break; // sin condición de versión, 0 filas = permisos o fila inexistente
     }
+    throw new Error('No se pudo guardar');
+  };
+
+  // Al terminar todos los guardados, se relee si llegó algo del servidor mientras tanto.
+  const settle = () => {
+    if (pendingRef.current === 0 && staleRef.current) {
+      staleRef.current = false;
+      loadRef.current?.(true);
+    }
+  };
+
+  // Guardado optimista, serializado: cada cambio se aplica al instante sobre el estado vigente y se escribe
+  // en cola, releyendo la BD antes de cada escritura para no pisar lo de otros dispositivos ni lo anterior.
+  // Si falla, se revierte con la mutación inversa (no con una foto), sin tocar otros cambios.
+  const applyChange = (mutate: Mutation, okMessage: string, undoable = false) => {
+    const before = liveRef.current;
+    const after = mutate(before);
+    commit(after);
+    if (!isAdmin || !supabase) return;
+    const client = supabase;
+
+    pendingRef.current++;
+    epochRef.current++;
+    const task = async () => {
+      try {
+        const { base, next, savedAt } = await persist(client, mutate, before);
+        pendingRef.current--;
+        epochRef.current++;
+        setMeta(savedAt);
+        writeCachedRoutine(next, savedAt);
+        if (pendingRef.current === 0) commit(next); // la versión guardada incluye lo de otros dispositivos
+        showToast({
+          message: okMessage,
+          kind: 'ok',
+          action: undoable
+            ? { label: 'Deshacer', run: () => { setToast(null); applyChange(inverseMutation(base, next), 'Cambio deshecho'); } }
+            : undefined,
+        });
+      } catch {
+        pendingRef.current--;
+        epochRef.current++;
+        commit(inverseMutation(before, after)(liveRef.current));
+        showToast({ message: 'No se pudo guardar. Se ha revertido el cambio.', kind: 'error' });
+      }
+      settle();
+    };
+    queueRef.current = queueRef.current.then(task);
   };
 
   const mapPart = (partId: string, fn: (p: RoutinePart) => RoutinePart): Mutation =>
@@ -206,8 +313,8 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
         ...part,
         corrections: part.corrections.map(c => {
           if (c.id !== correctionId || c.status === newStatus) return c;
-          const { masteredAt: _previous, ...rest } = c;
-          void _previous;
+          const rest = { ...c };
+          delete rest.masteredAt;
           return { ...rest, status: newStatus, statusAt: now, ...(newStatus === 'pink' ? { masteredAt: now } : {}) };
         }),
       })),
@@ -221,8 +328,8 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
         ...part,
         corrections: part.corrections.map(c => {
           if (c.id !== correctionId) return c;
-          const { who: _previous, ...rest } = c;
-          void _previous;
+          const rest = { ...c };
+          delete rest.who;
           return who.length ? { ...rest, who } : rest;
         }),
       })),
@@ -262,6 +369,21 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
       'Corrección eliminada',
       true
     );
+
+  // Pestañas: flechas, Inicio y Fin mueven la selección (patrón ARIA de tabs).
+  const onTabKeyDown = (e: React.KeyboardEvent, index: number) => {
+    const last = VIEWS.length - 1;
+    const target =
+      e.key === 'ArrowRight' ? (index + 1) % VIEWS.length
+      : e.key === 'ArrowLeft' ? (index + last) % VIEWS.length
+      : e.key === 'Home' ? 0
+      : e.key === 'End' ? last
+      : -1;
+    if (target < 0) return;
+    e.preventDefault();
+    setView(VIEWS[target][0]);
+    document.getElementById(`${tabsId}-${VIEWS[target][0]}`)?.focus();
+  };
 
   const totalCounts = routine.reduce((acc, part) => {
     part.corrections.filter(c => isAdmin || isFor(c, athlete)).forEach(c => acc[c.status]++);
@@ -352,13 +474,17 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
         {!isAdmin && <InstallHint />}
         {!isAdmin && <AthleteFilter athlete={athlete} />}
         <div role="tablist" aria-label="Vista" className="mb-5 grid grid-cols-2 gap-1 rounded-2xl bg-track p-1">
-          {([['rutina', 'Rutina'], ['hoy', 'Para trabajar']] as const).map(([key, label]) => (
+          {VIEWS.map(([key, label], i) => (
             <button
               key={key}
+              id={`${tabsId}-${key}`}
               type="button"
               role="tab"
               aria-selected={view === key}
+              aria-controls={`${tabsId}-panel`}
+              tabIndex={view === key ? 0 : -1}
               onClick={() => setView(key)}
+              onKeyDown={e => onTabKeyDown(e, i)}
               className={`rounded-xl py-2 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-accent ${
                 view === key ? 'bg-surface text-ink shadow-sm' : 'text-ink-soft'
               }`}
@@ -367,6 +493,7 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
             </button>
           ))}
         </div>
+        <div role="tabpanel" id={`${tabsId}-panel`} aria-labelledby={`${tabsId}-${view}`}>
         {view === 'hoy' ? (
           <TodayView
             routine={routine}
@@ -380,43 +507,31 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
         ) : (
           <>
             <WeeklyProgress routine={routine} />
-        {routine.map(part => (
-          <RoutineSection
-            key={part.id}
-            part={part}
-            isAdmin={isAdmin}
-            changes={changes}
-            athlete={athlete}
-            onAssignCorrection={assignCorrection}
-            onUpdateCorrection={updateCorrection}
-            onAddCorrection={addCorrection}
-            onDeleteCorrection={deleteCorrection}
-            onReorderCorrection={reorderCorrection}
-          />
-        ))}
+            {routine.map(part => (
+              <RoutineSection
+                key={part.id}
+                part={part}
+                isAdmin={isAdmin}
+                changes={changes}
+                athlete={athlete}
+                onAssignCorrection={assignCorrection}
+                onUpdateCorrection={updateCorrection}
+                onAddCorrection={addCorrection}
+                onDeleteCorrection={deleteCorrection}
+                onReorderCorrection={reorderCorrection}
+              />
+            ))}
           </>
         )}
+        </div>
       </div>
 
-      <div aria-live="polite" role="status" className="fixed bottom-4 inset-x-0 flex justify-center px-4 pointer-events-none">
-        {toast && (
-          <div
-            className={`pointer-events-auto max-w-md w-full flex items-center justify-between gap-3 rounded-2xl px-4 py-3 text-sm font-medium shadow-lg text-on-toast ${
-              toast.kind === 'error' ? 'bg-red-700 !text-white' : 'bg-toast'
-            }`}
-          >
-            <span>{toast.message}</span>
-            {toast.action && (
-              <button
-                type="button"
-                onClick={toast.action.run}
-                className="font-bold underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-current"
-              >
-                {toast.action.label}
-              </button>
-            )}
-          </div>
-        )}
+      <div className="fixed bottom-4 inset-x-0 flex justify-center px-4 pointer-events-none">
+        <div className="max-w-md w-full">
+          {/* Dos regiones siempre presentes para que los lectores de pantalla anuncien el aviso al aparecer */}
+          <div role="status">{toast?.kind === 'ok' && <ToastBox toast={toast} />}</div>
+          <div role="alert">{toast?.kind === 'error' && <ToastBox toast={toast} />}</div>
+        </div>
       </div>
     </main>
   );

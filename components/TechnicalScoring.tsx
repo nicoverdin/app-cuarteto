@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { ChevronLeft, Plus, Trash2, Users, User, Info } from 'lucide-react';
 import { ATHLETES } from '../lib/athletes';
@@ -14,39 +14,58 @@ import {
 const isCoachUrl = () =>
   typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('entrenador') === 'nico';
 
+// subscribe estable (fuera del componente) para useSyncExternalStore.
+const subscribe = () => () => {};
+
 const fmt = (n: number) => n.toFixed(2).replace('.', ',');
 const signed = (n: number) => (n > 0 ? `+${n}` : `${n}`);
-const today = () => new Date().toISOString().slice(0, 10);
+const pad = (n: number) => String(n).padStart(2, '0');
+// Fecha local (no UTC): entre 00:00 y 02:00 en España toISOString daría el día anterior.
+const today = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
 
+const NO_SCORES: Score[] = [];
+const rowKey = (sid: string, elemento: string, atleta: string | null) => `${sid}|${elemento}|${atleta ?? ''}`;
+
+// text-base (16px): iOS hace zoom al enfocar campos con menos.
 const selectCls =
-  'w-full rounded-xl border border-line bg-surface px-2.5 py-2.5 text-sm font-semibold text-ink disabled:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent';
+  'w-full rounded-xl border border-line bg-surface px-2.5 py-2.5 text-base font-semibold text-ink disabled:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent';
 
-function LevelSelect({ el, value, onChange, disabled, label, autoLabel }: {
-  el: TechElement; value: number | null; onChange: (v: number | null) => void; disabled: boolean; label: string; autoLabel?: string;
+const levelText = (el: TechElement, i: number) => `${i === 0 ? 'Sin nivel' : el.levels[i].code} · ${el.levels[i].base}`;
+const qoeText = (q: number) => (q === 0 ? 'QOE 0' : `QOE ${signed(q)}`);
+
+function LevelSelect({ el, value, onChange, readOnly, label, autoLabel }: {
+  el: TechElement; value: number | null; onChange: (v: number | null) => void; readOnly: boolean; label: string; autoLabel?: string;
 }) {
+  // Solo lectura: texto plano, no un select que parece editable.
+  if (readOnly) {
+    return <span className="text-sm font-semibold text-ink">{value === null ? (autoLabel ?? '—') : levelText(el, value)}</span>;
+  }
   return (
     <select
       aria-label={label}
       className={selectCls}
-      disabled={disabled}
       value={value === null ? '' : String(value)}
       onChange={e => onChange(e.target.value === '' ? null : Number(e.target.value))}
     >
       <option value="">{autoLabel ?? '—'}</option>
       {el.levels.map((l, i) => (
-        <option key={l.code} value={i}>{i === 0 ? 'Sin nivel' : l.code} · {l.base}</option>
+        <option key={l.code} value={i}>{levelText(el, i)}</option>
       ))}
     </select>
   );
 }
 
-function QoeSelect({ value, onChange, disabled, label }: {
-  value: number; onChange: (v: number) => void; disabled: boolean; label: string;
+function QoeSelect({ value, onChange, disabled, readOnly, label }: {
+  value: number; onChange: (v: number) => void; disabled?: boolean; readOnly: boolean; label: string;
 }) {
+  if (readOnly) return <span className="text-sm font-semibold text-ink-soft">{qoeText(value)}</span>;
   return (
     <select aria-label={label} className={selectCls} disabled={disabled} value={value} onChange={e => onChange(Number(e.target.value))}>
       {QOE_VALUES.map(q => (
-        <option key={q} value={q}>{q === 0 ? 'QOE 0' : `QOE ${signed(q)}`}</option>
+        <option key={q} value={q}>{qoeText(q)}</option>
       ))}
     </select>
   );
@@ -62,23 +81,50 @@ function Breakdown({ v }: { v: ElementValue }) {
 }
 
 export default function TechnicalScoring() {
-  const isAdmin = useSyncExternalStore(() => () => {}, isCoachUrl, () => false);
+  const isAdmin = useSyncExternalStore(subscribe, isCoachUrl, () => false);
   const [sessions, setSessions] = useState<TechSession[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [scores, setScores] = useState<Score[]>([]);
+  const [scores, setScores] = useState<Score[]>(NO_SCORES);
+  // Sesión cuyas puntuaciones están cargadas; mientras no coincida con sessionId no se muestra ni se escribe nada.
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [ignored, setIgnored] = useState(0);
   const [loading, setLoading] = useState(!!supabase);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [missingTables, setMissingTables] = useState(false);
   const [missingColumn, setMissingColumn] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [toggling, setToggling] = useState(false);
   const [newName, setNewName] = useState('');
   const [newDate, setNewDate] = useState(today);
   const [newElements, setNewElements] = useState<string[]>(() => CATALOG.map(e => e.id));
 
-  const fail = useCallback((e: unknown) => {
+  // Sesión vigente, para descartar resultados de operaciones de otra sesión.
+  const sessionRef = useRef<string | null>(null);
+  // Última versión confirmada en la base de la sesión vigente (para revertir solo la fila que falló).
+  const confirmedRef = useRef<Score[]>([]);
+  // Cola de escrituras por sesión+elemento y contador de cambios por fila.
+  const chains = useRef(new Map<string, Promise<void>>());
+  const seqs = useRef(new Map<string, number>());
+
+  const selectSession = useCallback((id: string | null) => {
+    sessionRef.current = id;
+    confirmedRef.current = [];
+    setSessionId(id);
+    setScores(NO_SCORES);
+    setLoadedFor(null);
+    setIgnored(0);
+    setLoadError(null);
+    setSaveError(null);
+  }, []);
+
+  const fail = useCallback((e: unknown, kind: 'load' | 'save') => {
     if (isMissingTable(e as { code?: string })) setMissingTables(true);
     else if (isMissingColumn(e as { code?: string })) setMissingColumn(true);
-    else setError('No se pudo guardar o cargar. Revisa la conexión e inténtalo de nuevo.');
+    else if (kind === 'load') setLoadError('No se pudieron cargar los datos. Revisa la conexión e inténtalo de nuevo.');
+    else setSaveError('No se pudo guardar el cambio. Revisa la conexión e inténtalo de nuevo.');
   }, []);
 
   useEffect(() => {
@@ -88,110 +134,157 @@ export default function TechnicalScoring() {
       .then(list => {
         if (!alive) return;
         setSessions(list);
-        setSessionId(list[0]?.id ?? null);
+        selectSession(list[0]?.id ?? null);
       })
-      .catch(e => alive && fail(e))
+      .catch(e => alive && fail(e, 'load'))
       .finally(() => alive && setLoading(false));
     return () => { alive = false; };
-  }, [fail]);
+  }, [fail, selectSession]);
 
   useEffect(() => {
     if (!supabase || !sessionId) return;
     let alive = true;
     loadScores(supabase, sessionId)
-      .then(rows => alive && setScores(rows))
-      .catch(e => alive && fail(e));
+      .then(({ scores: rows, ignored: n }) => {
+        if (!alive) return;
+        confirmedRef.current = rows;
+        setScores(rows);
+        setIgnored(n);
+        setLoadedFor(sessionId);
+      })
+      .catch(e => alive && fail(e, 'load'));
     return () => { alive = false; };
-  }, [sessionId, fail]);
+  }, [sessionId, reloadKey, fail]);
 
+  const ready = !!sessionId && loadedFor === sessionId;
+  const shown = ready ? scores : NO_SCORES;
   const session = sessions.find(s => s.id === sessionId) ?? null;
   // Elementos de la sesión (vacío = todos). Solo estos se muestran y suman.
   const active = useMemo(
     () => CATALOG.filter(el => !session?.elementos.length || session.elementos.includes(el.id)),
     [session]
   );
-  const summary = useMemo(() => summarize(scores, ATHLETES, active), [scores, active]);
+  const summary = useMemo(() => summarize(shown, ATHLETES, active), [shown, active]);
   const find = (elemento: string, atleta: string | null) =>
-    scores.find(s => s.elemento === elemento && s.atleta === atleta);
+    shown.find(s => s.elemento === elemento && s.atleta === atleta);
 
-  // Guardado optimista con rollback si falla.
-  const persist = async (next: Score) => {
-    const reason = validateScore(next);
-    if (reason || !supabase || !sessionId) { if (reason) setError(reason); return; }
-    const prev = scores;
-    setError(null);
-    setScores([...prev.filter(s => !(s.elemento === next.elemento && s.atleta === next.atleta)), next]);
-    try {
-      await saveScore(supabase, sessionId, next);
-    } catch (e) {
-      setScores(prev);
-      fail(e);
+  // Escritura optimista de las filas (elemento, atletas) de la sesión `sid`:
+  //  · en cola por sesión+elemento, para que lleguen a la base en orden;
+  //  · si falla, solo se revierten esas filas (a lo último confirmado) y solo si nadie las ha vuelto a tocar;
+  //  · si la sesión activa cambió, no se toca la pantalla.
+  const mutate = (
+    sid: string, elemento: string, atletas: (string | null)[],
+    optimistic: (list: Score[]) => Score[], write: () => Promise<void>, confirm: (list: Score[]) => Score[]
+  ) => {
+    const live = () => sessionRef.current === sid;
+    if (live()) { setSaveError(null); setScores(optimistic); }
+    const mine = new Map<string, number>();
+    for (const a of atletas) {
+      const k = rowKey(sid, elemento, a);
+      const n = (seqs.current.get(k) ?? 0) + 1;
+      seqs.current.set(k, n);
+      mine.set(k, n);
     }
+    const chainKey = `${sid}|${elemento}`;
+    const next = (chains.current.get(chainKey) ?? Promise.resolve()).then(write).then(
+      () => { if (live()) confirmedRef.current = confirm(confirmedRef.current); },
+      e => {
+        if (!live()) return;
+        const mineNow = atletas.filter(a => seqs.current.get(rowKey(sid, elemento, a)) === mine.get(rowKey(sid, elemento, a)));
+        const inSet = (s: Score) => s.elemento === elemento && mineNow.includes(s.atleta);
+        const back = confirmedRef.current.filter(inSet);
+        setScores(list => [...list.filter(s => !inSet(s)), ...back]);
+        fail(e, 'save');
+      }
+    );
+    chains.current.set(chainKey, next);
   };
 
-  const remove = async (elemento: string, atleta?: string | null) => {
-    if (!supabase || !sessionId) return;
-    const prev = scores;
-    setError(null);
-    setScores(prev.filter(s => !(s.elemento === elemento && (atleta === undefined || s.atleta === atleta))));
-    try {
-      await deleteScores(supabase, sessionId, elemento, atleta);
-    } catch (e) {
-      setScores(prev);
-      fail(e);
-    }
+  const sameRow = (a: Score, b: Score) => a.elemento === b.elemento && a.atleta === b.atleta;
+  const withRow = (list: Score[], next: Score) => [...list.filter(s => !sameRow(s, next)), next];
+
+  const persist = (next: Score) => {
+    const sid = sessionRef.current;
+    const reason = validateScore(next);
+    if (reason) { setSaveError(reason); return; }
+    if (!supabase || !sid || !ready) return;
+    const db = supabase;
+    mutate(sid, next.elemento, [next.atleta], list => withRow(list, next), () => saveScore(db, sid, next), list => withRow(list, next));
+  };
+
+  const remove = (elemento: string, atleta?: string | null) => {
+    const sid = sessionRef.current;
+    if (!supabase || !sid || !ready) return;
+    const db = supabase;
+    const hit = (s: Score) => s.elemento === elemento && (atleta === undefined || s.atleta === atleta);
+    mutate(
+      sid, elemento, atleta === undefined ? [null, ...ATHLETES] : [atleta],
+      list => list.filter(s => !hit(s)), () => deleteScores(db, sid, elemento, atleta), list => list.filter(s => !hit(s))
+    );
   };
 
   const addSession = async () => {
     const nombre = newName.trim();
-    if (!supabase || !nombre) return;
+    if (!supabase || !nombre || submitting) return;
+    setSubmitting(true);
+    setSaveError(null);
     try {
       const created = await createSession(supabase, nombre, newDate || today(), newElements);
       setSessions(list => [created, ...list]);
-      setSessionId(created.id);
-      setScores([]);
+      selectSession(created.id);
       setNewName('');
       setNewElements(CATALOG.map(e => e.id));
       setCreating(false);
     } catch (e) {
-      fail(e);
+      fail(e, 'save');
+    } finally {
+      setSubmitting(false);
     }
   };
 
   // Añade o quita un elemento de la sesión actual. Quitarlo borra sus puntuaciones (con confirmación).
+  // Primero se actualiza `elementos` y solo después se borran las puntuaciones: si lo primero falla no se pierde nada.
   const toggleElement = async (el: TechElement) => {
-    if (!supabase || !session) return;
+    if (!supabase || !session || !ready || toggling) return;
+    const db = supabase;
+    const sid = session.id;
     const on = active.some(a => a.id === el.id);
     if (on && active.length === 1) return;
     if (on && scores.some(s => s.elemento === el.id) && !window.confirm(`¿Quitar ${el.name} y borrar sus puntuaciones de esta sesión?`)) return;
     const nextIds = on ? active.filter(a => a.id !== el.id).map(a => a.id) : CATALOG.filter(c => c.id === el.id || active.some(a => a.id === c.id)).map(c => c.id);
-    const prevSessions = sessions;
-    const prevScores = scores;
-    setError(null);
-    setSessions(list => list.map(s => (s.id === session.id ? { ...s, elementos: nextIds } : s)));
-    if (on) setScores(list => list.filter(s => s.elemento !== el.id));
+    const prevIds = session.elementos;
+    setToggling(true);
+    setSaveError(null);
+    setSessions(list => list.map(s => (s.id === sid ? { ...s, elementos: nextIds } : s)));
     try {
-      if (on) await deleteScores(supabase, session.id, el.id);
-      await updateSessionElements(supabase, session.id, nextIds);
+      await updateSessionElements(db, sid, nextIds);
     } catch (e) {
-      setSessions(prevSessions);
-      setScores(prevScores);
-      fail(e);
+      setSessions(list => list.map(s => (s.id === sid ? { ...s, elementos: prevIds } : s)));
+      if (sessionRef.current === sid) fail(e, 'save');
+      setToggling(false);
+      return;
+    }
+    setToggling(false);
+    if (on) {
+      const hit = (s: Score) => s.elemento === el.id;
+      mutate(sid, el.id, [null, ...ATHLETES], list => list.filter(s => !hit(s)), () => deleteScores(db, sid, el.id), list => list.filter(s => !hit(s)));
     }
   };
 
   const removeSession = async () => {
     const current = sessions.find(s => s.id === sessionId);
-    if (!supabase || !current) return;
+    if (!supabase || !current || submitting) return;
     if (!window.confirm(`¿Borrar la sesión "${current.nombre}" y todas sus puntuaciones?`)) return;
+    setSubmitting(true);
     try {
       await deleteSession(supabase, current.id);
       const rest = sessions.filter(s => s.id !== current.id);
       setSessions(rest);
-      setSessionId(rest[0]?.id ?? null);
-      setScores([]);
+      selectSession(rest[0]?.id ?? null);
     } catch (e) {
-      fail(e);
+      fail(e, 'save');
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -254,9 +347,24 @@ export default function TechnicalScoring() {
           <code className="break-words">alter table public.sesiones_tecnicas add column if not exists elementos text[] not null default &apos;{'{}'}&apos;;</code>
         </p>
       )}
-      {error && (
+      {loadError && (
         <p role="alert" className="mt-4 rounded-2xl border border-danger/40 bg-surface px-4 py-3 text-sm font-medium text-danger">
-          {error}
+          {loadError}{' '}
+          {sessionId && (
+            <button type="button" onClick={() => { setLoadError(null); setReloadKey(k => k + 1); }} className="underline">
+              Reintentar
+            </button>
+          )}
+        </p>
+      )}
+      {saveError && (
+        <p role="alert" className="mt-4 rounded-2xl border border-danger/40 bg-surface px-4 py-3 text-sm font-medium text-danger">
+          {saveError}
+        </p>
+      )}
+      {isAdmin && ignored > 0 && (
+        <p role="status" className="mt-4 text-xs text-ink-muted">
+          {ignored === 1 ? 'Se ignoró 1 fila' : `Se ignoraron ${ignored} filas`} de esta sesión con datos no válidos.
         </p>
       )}
 
@@ -271,7 +379,7 @@ export default function TechnicalScoring() {
                   aria-label="Sesión"
                   className={selectCls}
                   value={sessionId ?? ''}
-                  onChange={e => { setScores([]); setSessionId(e.target.value); }}
+                  onChange={e => selectSession(e.target.value)}
                 >
                   {sessions.map(s => (
                     <option key={s.id} value={s.id}>{s.nombre} · {s.fecha.split('-').reverse().join('/')}</option>
@@ -292,6 +400,7 @@ export default function TechnicalScoring() {
                     <button
                       type="button"
                       onClick={removeSession}
+                      disabled={submitting}
                       aria-label="Borrar sesión"
                       className="shrink-0 rounded-xl border border-line bg-surface p-2.5 text-danger focus-visible:outline-2 focus-visible:outline-accent"
                     >
@@ -313,6 +422,7 @@ export default function TechnicalScoring() {
                     key={el.id}
                     type="button"
                     aria-pressed={on}
+                    disabled={toggling}
                     onClick={() => toggleElement(el)}
                     className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
                       on ? 'border-accent bg-accent text-on-accent' : 'border-line bg-surface text-ink-soft'
@@ -359,7 +469,7 @@ export default function TechnicalScoring() {
               </fieldset>
               <button
                 type="submit"
-                disabled={!newName.trim() || newElements.length === 0}
+                disabled={!newName.trim() || newElements.length === 0 || submitting}
                 className="w-full rounded-xl bg-accent px-4 py-2.5 text-sm font-bold text-on-accent disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
                 Crear sesión
@@ -375,7 +485,11 @@ export default function TechnicalScoring() {
         </section>
       )}
 
-      {sessionId && !missingTables && !missingColumn && (
+      {sessionId && !ready && !loadError && !missingTables && !missingColumn && (
+        <p role="status" className="mt-5 text-sm text-ink-muted">Cargando…</p>
+      )}
+
+      {sessionId && ready && !missingTables && !missingColumn && (
         <>
           <section aria-label="Totales" className="mt-5 rounded-2xl border border-line bg-surface p-4">
             <div className="flex items-baseline justify-between">
@@ -398,7 +512,7 @@ export default function TechnicalScoring() {
             {active.map(el => {
               const sum = summary.elements[el.id];
               const group = find(el.id, null);
-              const hasAny = scores.some(s => s.elemento === el.id);
+              const hasAny = shown.some(s => s.elemento === el.id);
               const readOnly = !isAdmin;
               const base: Score = { elemento: el.id, atleta: null, nivel: null, qoe: 0, extras: [] };
 
@@ -423,7 +537,7 @@ export default function TechnicalScoring() {
                     <h3 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-ink-soft">
                       <Users className="w-3.5 h-3.5" aria-hidden="true" /> Grupo
                     </h3>
-                    <div className="mt-2 grid grid-cols-2 gap-2">
+                    <div className="mt-2 grid grid-cols-1 gap-2 min-[400px]:grid-cols-2">
                       <LevelSelect
                         el={el}
                         label={`${el.name}: nivel del grupo`}
@@ -433,13 +547,13 @@ export default function TechnicalScoring() {
                             ? 'Automático (faltan niveles)'
                             : `Automático (${sum.derivedLevel === 0 ? 'sin nivel' : el.levels[sum.derivedLevel].code})`
                         }
-                        disabled={readOnly}
+                        readOnly={readOnly}
                         onChange={nivel => persist({ ...(group ?? base), nivel })}
                       />
                       <QoeSelect
                         label={`${el.name}: QOE del grupo`}
                         value={group?.qoe ?? 0}
-                        disabled={readOnly}
+                        readOnly={readOnly}
                         onChange={qoe => persist({ ...(group ?? base), qoe })}
                       />
                     </div>
@@ -483,26 +597,39 @@ export default function TechnicalScoring() {
                         const row = find(el.id, a);
                         const val = sum.athletes[a];
                         return (
-                          <li key={a} className="grid grid-cols-[4.5rem_1fr_1fr_3.5rem] items-center gap-1.5">
-                            <span className="truncate text-sm font-semibold text-ink">{a}</span>
-                            <LevelSelect
-                              el={el}
-                              label={`${el.name}: nivel de ${a}`}
-                              value={row?.nivel ?? null}
-                              disabled={readOnly}
-                              onChange={nivel =>
-                                nivel === null
-                                  ? remove(el.id, a)
-                                  : persist({ elemento: el.id, atleta: a, nivel, qoe: row?.qoe ?? 0, extras: [] })
-                              }
-                            />
-                            <QoeSelect
-                              label={`${el.name}: QOE de ${a}`}
-                              value={row?.qoe ?? 0}
-                              disabled={readOnly || !row}
-                              onChange={qoe => row && persist({ ...row, qoe })}
-                            />
-                            <span className="text-right text-sm font-bold text-ink tabular-nums">{val ? fmt(val.total) : '—'}</span>
+                          <li key={a} className="rounded-xl bg-track/50 px-2.5 py-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="truncate text-sm font-semibold text-ink">{a}</span>
+                              {readOnly && (
+                                <span className="flex items-center gap-2">
+                                  <LevelSelect el={el} label="" value={row?.nivel ?? null} readOnly onChange={() => {}} />
+                                  {row && <QoeSelect label="" value={row.qoe} readOnly onChange={() => {}} />}
+                                </span>
+                              )}
+                              <span className="text-right text-sm font-bold text-ink tabular-nums">{val ? fmt(val.total) : '—'}</span>
+                            </div>
+                            {!readOnly && (
+                              <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+                                <LevelSelect
+                                  el={el}
+                                  label={`${el.name}: nivel de ${a}`}
+                                  value={row?.nivel ?? null}
+                                  readOnly={false}
+                                  onChange={nivel =>
+                                    nivel === null
+                                      ? remove(el.id, a)
+                                      : persist({ elemento: el.id, atleta: a, nivel, qoe: row?.qoe ?? 0, extras: [] })
+                                  }
+                                />
+                                <QoeSelect
+                                  label={`${el.name}: QOE de ${a}`}
+                                  value={row?.qoe ?? 0}
+                                  readOnly={false}
+                                  disabled={!row}
+                                  onChange={qoe => row && persist({ ...row, qoe })}
+                                />
+                              </div>
+                            )}
                           </li>
                         );
                       })}

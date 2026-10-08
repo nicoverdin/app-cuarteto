@@ -98,3 +98,53 @@ export function newCorrectionId(): string {
   if (typeof c?.randomUUID === 'function') return `new-${c.randomUUID()}`;
   return `new-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
+
+export type Mutation = (routine: RoutinePart[]) => RoutinePart[];
+
+/**
+ * Mutación inversa de un cambio (antes → después), aplicable sobre el estado ACTUAL (que puede
+ * contener otros cambios): quita lo añadido, restaura lo modificado, recoloca el orden y reinserta lo borrado.
+ * Se usa en lugar de volver a una foto, que pisaría cambios ajenos.
+ */
+export function inverseMutation(before: RoutinePart[], after: RoutinePart[]): Mutation {
+  return current => current.map(part => {
+    const b = before.find(p => p.id === part.id);
+    const a = after.find(p => p.id === part.id);
+    if (!b || !a) return part;
+
+    const beforeById = new Map(b.corrections.map(c => [c.id, c]));
+    const afterById = new Map(a.corrections.map(c => [c.id, c]));
+    let list = part.corrections.filter(c => beforeById.has(c.id) || !afterById.has(c.id)); // quita las añadidas
+
+    // Restaura las modificadas
+    list = list.map(c => {
+      const prev = beforeById.get(c.id);
+      const next = afterById.get(c.id);
+      return prev && next && JSON.stringify(prev) !== JSON.stringify(next) ? prev : c;
+    });
+
+    // Recoloca el orden de las que existían antes y después, ocupando los mismos huecos
+    const common = b.corrections.map(c => c.id).filter(id => afterById.has(id));
+    const commonAfter = a.corrections.map(c => c.id).filter(id => beforeById.has(id));
+    if (common.some((id, i) => id !== commonAfter[i])) {
+      const byId = new Map(list.map(c => [c.id, c]));
+      const slots = list.flatMap((c, i) => (common.includes(c.id) ? [i] : []));
+      const ordered = common.filter(id => byId.has(id)).map(id => byId.get(id)!);
+      list = [...list];
+      slots.forEach((slot, i) => { list[slot] = ordered[i]; });
+    }
+
+    // Reinserta las borradas tras la última anterior que siga presente
+    b.corrections.forEach((c, i) => {
+      if (afterById.has(c.id) || list.some(x => x.id === c.id)) return;
+      let at = 0;
+      for (let j = i - 1; j >= 0; j--) {
+        const idx = list.findIndex(x => x.id === b.corrections[j].id);
+        if (idx >= 0) { at = idx + 1; break; }
+      }
+      list = [...list.slice(0, at), c, ...list.slice(at)];
+    });
+
+    return { ...part, corrections: list };
+  });
+}
