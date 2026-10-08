@@ -13,7 +13,7 @@ import { isFor, useAthlete } from '../lib/athletes';
 import { MainProgressBar, StatusLegend } from '../components/ProgressCharts';
 import { supabase, fetchRoutine, timeoutSignal } from '../lib/supabase';
 import { diffAgainst, getSeen, getServerSeen, markSeen, reloadSeenBaseline, subscribeSeen } from '../lib/changes';
-import { initialData, inverseMutation, isOlderOrEqual, isValidRoutine, newCorrectionId, parseServerDate, rebuildFromConfirmed, readCachedRoutine, readCachedUpdatedAt, writeCachedRoutine, type Mutation } from '../lib/routine';
+import { initialData, inverseMutation, isAbortError, isOlderOrEqual, isValidRoutine, newCorrectionId, parseServerDate, rebuildFromConfirmed, readCachedRoutine, readCachedUpdatedAt, writeCachedRoutine, type Mutation } from '../lib/routine';
 
 interface Toast {
   message: string;
@@ -77,7 +77,7 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
   const queueRef = useRef<Promise<void>>(Promise.resolve());
   const confirmedRef = useRef(routine); // último estado confirmado por el servidor (dato leído o último guardado)
   const pendingMutsRef = useRef<{ mutate: Mutation }[]>([]); // mutaciones en cola, en orden
-  const freshRef = useRef(!!initialRoutine); // ¿lo que se ve viene del servidor (no de la copia local)?
+  const freshRef = useRef(false); // ¿lo que se ve viene de una lectura del servidor en cliente? (el HTML puede venir de la caché del SW)
   const loadRef = useRef<((silent: boolean) => Promise<void>) | null>(null);
 
   // Novedades desde la última vez que la atleta usó la app (el entrenador no las necesita).
@@ -221,7 +221,7 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
       .subscribe();
 
     return () => {
-      loadRef.current = null;
+      if (!staleRef.current) loadRef.current = null; // con una relectura pendiente se conserva hasta que se reasigne
       document.removeEventListener('visibilitychange', refresh);
       window.removeEventListener('online', refresh);
       client.removeChannel(channel);
@@ -299,10 +299,12 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
     epochRef.current++;
     const task = async () => {
       let result: Awaited<ReturnType<typeof persist>> | null = null;
+      let unconfirmed = false; // timeout/abort: la escritura pudo llegar al servidor
       try {
         result = await persist(client, mutate, before);
-      } catch {
+      } catch (e) {
         result = null;
+        unconfirmed = isAbortError(e);
       }
       pendingRef.current--;
       epochRef.current++;
@@ -325,7 +327,12 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
           // Estado confirmado + mutaciones aún en cola: no pierde cambios pendientes ni recupera estados nunca guardados.
           commit(rebuildFromConfirmed(confirmedRef.current, pendingMutsRef.current.map(e => e.mutate)));
           staleRef.current = true; // se relee al terminar por si el servidor tiene algo más
-          showToast({ message: 'No se pudo guardar. Se ha revertido el cambio.', kind: 'error' });
+          showToast({
+            message: unconfirmed
+              ? 'No se pudo confirmar el guardado; comprobando…'
+              : 'No se pudo guardar. Se ha revertido el cambio.',
+            kind: 'error',
+          });
         }
       } catch {
         /* un fallo al actualizar la vista no debe bloquear la cola */
@@ -378,7 +385,10 @@ export default function ClientPage({ initialRoutine, initialUpdatedAt }: Props) 
       ...(who.length ? { who } : {}),
     };
     applyChange(
-      mapPart(partId, part => ({ ...part, corrections: [...part.corrections, correction] })),
+      // Idempotente: si la escritura ya llegó (timeout) y se reintenta, no se duplica.
+      mapPart(partId, part =>
+        part.corrections.some(c => c.id === correction.id) ? part : { ...part, corrections: [...part.corrections, correction] }
+      ),
       'Corrección añadida'
     );
   };

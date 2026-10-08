@@ -17,6 +17,7 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
+  title: "Programa Cuarteto",
   description: "Control de correcciones del disco",
 };
 

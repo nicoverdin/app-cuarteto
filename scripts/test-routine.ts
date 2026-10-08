@@ -1,7 +1,7 @@
 // Pruebas de la mutación inversa (rollback/deshacer): node:test + tsx.   npx tsx --test scripts/test-routine.ts
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { inverseMutation, isOlderOrEqual, parseServerDate, rebuildFromConfirmed, type Mutation } from '../lib/routine';
+import { inverseMutation, isAbortError, isOlderOrEqual, parseServerDate, rebuildFromConfirmed, type Mutation } from '../lib/routine';
 import type { RoutinePart } from '../types';
 
 const c = (id: string, status: 'red' | 'yellow' | 'green' | 'pink' = 'red') => ({ id, text: id, status });
@@ -64,6 +64,11 @@ test('fechas de Postgres con espacio y offset corto se normalizan', () => {
   assert.equal(parseServerDate('2026-10-08 10:34:30+00'), Date.parse('2026-10-08T10:34:30+00:00'));
   assert.equal(parseServerDate('2026-10-08T10:34:30.123Z'), Date.parse('2026-10-08T10:34:30.123Z'));
   assert.ok(Number.isNaN(parseServerDate('basura')));
+  assert.equal(parseServerDate('2026-10-08'), Date.parse('2026-10-08T00:00:00Z'));
+  assert.equal(parseServerDate('2026-10-08 10:34:30-05'), Date.parse('2026-10-08T10:34:30-05:00'));
+  assert.ok(isAbortError(Object.assign(new Error('x'), { name: 'TimeoutError' })));
+  assert.ok(isAbortError({ message: 'AbortError: The user aborted a request.' }));
+  assert.ok(!isAbortError(new Error('No se pudo guardar')));
   assert.equal(isOlderOrEqual('2026-10-08 10:34:30+00', '2026-10-08T10:34:31Z'), true);
   assert.equal(isOlderOrEqual('basura', '2026-10-08T10:34:31Z'), false);
 });

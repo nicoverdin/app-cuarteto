@@ -33,7 +33,7 @@ interface Item {
 const CODE_KEY = 'cuarteto:reglamento-code';
 const readCode = () => {
   try {
-    return localStorage.getItem(CODE_KEY) ?? '';
+    return (localStorage.getItem(CODE_KEY) ?? '').trim();
   } catch {
     return '';
   }
@@ -139,9 +139,10 @@ export default function RegulationChat() {
 
   const submit = async (q: string, queryMode: Mode = mode) => {
     const text = q.trim();
+    const codeToSend = code.trim(); // fetch recorta los espacios de la cabecera: un espacio sobrante daría 401
     if (text.length < 3 || loading) return;
     // Las cabeceras HTTP solo admiten ASCII: otro carácter haría fallar fetch con un TypeError.
-    if (code && !/^[\x20-\x7e]*$/.test(code)) {
+    if (codeToSend && !/^[\x20-\x7e]*$/.test(codeToSend)) {
       setNeedsCode(true);
       setItems(prev => [
         ...prev,
@@ -154,15 +155,16 @@ export default function RegulationChat() {
     const base: Item = { id, question: text, mode: queryMode };
     const controller = new AbortController();
     abortRef.current = controller;
-    // Tiempo máximo de espera (algo por encima del límite del servidor).
-    const timer = setTimeout(() => controller.abort(new DOMException('timeout', 'TimeoutError')), 70_000);
+    // Tiempo máximo de espera: por encima del presupuesto del servidor (90 s), para recibir su 504 en vez de cortar antes.
+    // Nota: cancelar (botón o timeout) no se propaga al servidor, que puede seguir hasta su presupuesto con el hueco ocupado.
+    const timer = setTimeout(() => controller.abort(new DOMException('timeout', 'TimeoutError')), 95_000);
     setItems(prev => [...prev, base]);
     setQuestion('');
     setLoading(true);
     try {
       const res = await fetch('/api/reglamento', {
         method: 'POST',
-        headers: { 'content-type': 'application/json', ...(code ? { 'x-access-code': code } : {}) },
+        headers: { 'content-type': 'application/json', ...(codeToSend ? { 'x-access-code': codeToSend } : {}) },
         body: JSON.stringify({ question: text, mode: queryMode }),
         signal: controller.signal,
       });
@@ -193,9 +195,10 @@ export default function RegulationChat() {
   };
 
   const saveCode = (value: string) => {
-    setCode(value);
+    const clean = value.trim();
+    setCode(clean);
     try {
-      localStorage.setItem(CODE_KEY, value);
+      localStorage.setItem(CODE_KEY, clean);
     } catch {
       /* se ignora */
     }

@@ -5,7 +5,7 @@
 // Los datos de Supabase no pasan por aquí: la app guarda su propia copia local (localStorage) y,
 // al abrir sin red, prefiere esa copia si es más reciente que el HTML cacheado.
 // Sube la versión al cambiar la estrategia: al activarse se borran las cachés antiguas.
-const CACHE = 'cuarteto-v3';
+const CACHE = 'cuarteto-v4';
 
 self.addEventListener('install', () => self.skipWaiting());
 
@@ -24,13 +24,20 @@ const pageKey = url => {
   return url.origin + url.pathname + (coach ? '?entrenador=nico' : '');
 };
 
-// Tope de entradas /_next/static: cada despliegue crea ficheros nuevos y los antiguos no se reutilizan.
-const MAX_STATIC = 80;
+// Tope de entradas /_next/static (cada despliegue crea ficheros nuevos). Es LRU real: cada acierto se
+// re-guarda (pasa al final del orden de claves) y se expulsan las menos usadas, así los chunks compartidos
+// entre despliegues (framework/main) sobreviven.
+const MAX_STATIC = 120;
+const isStatic = r => new URL(r.url).pathname.startsWith('/_next/static');
 const trimStatic = c =>
   c.keys().then(reqs => {
-    const old = reqs.filter(r => new URL(r.url).pathname.startsWith('/_next/static'));
+    const old = reqs.filter(isStatic);
     return Promise.all(old.slice(0, Math.max(0, old.length - MAX_STATIC)).map(r => c.delete(r)));
   });
+const touch = (request, hit) => {
+  caches.open(CACHE).then(c => c.put(request, hit.clone())).catch(() => {});
+  return hit;
+};
 
 const store = (key, res) => {
   if (!res.ok) return; // nunca se cachean errores ni redirecciones
@@ -68,10 +75,10 @@ self.addEventListener('fetch', event => {
 
   if (url.pathname.startsWith('/_next/static')) {
     event.respondWith(
-      caches.match(request).then(hit => hit || fetch(request).then(res => {
+      caches.match(request).then(hit => (hit ? touch(request, hit) : fetch(request).then(res => {
         store(request, res);
         return res;
-      }))
+      })))
     );
     return;
   }

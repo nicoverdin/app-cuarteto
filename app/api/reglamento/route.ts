@@ -134,15 +134,26 @@ export async function POST(request: Request) {
     return json(body, status);
   };
 
+  // Tope propio de cada petición: quien comparte la promesa no espera más que su presupuesto,
+  // sin cancelar la promesa del propietario.
+  let onBudget: (() => void) | undefined;
+  const own = new Promise<never>((_, reject) => {
+    onBudget = () => reject(new DOMException('timeout', 'TimeoutError'));
+    budget.addEventListener('abort', onBudget, { once: true });
+  });
+  own.catch(() => {});
+
   try {
-    const result = await promise;
+    const result = await Promise.race([promise, own]);
     // Solo se cachean respuestas completas y con cita (o búsquedas), nunca errores ni avisos.
     if (owner && !result.warning) cacheSet(key, result);
     return json(result);
   } catch (e) {
     // Sin datos sensibles: solo el tipo, el estado HTTP y el mensaje del error.
     console.error('[reglamento]', e instanceof Error ? e.name : typeof e, (e as { status?: number }).status ?? '', e instanceof Error ? e.message.slice(0, 300) : '');
-    if (budget.aborted) {
+    // También si el abort/timeout viene de la promesa compartida (presupuesto del propietario).
+    const name = e instanceof Error ? e.name : '';
+    if (budget.aborted || e instanceof Anthropic.APIUserAbortError || name === 'TimeoutError' || name === 'AbortError') {
       return fail({ error: 'tiempo', message: 'La consulta ha tardado demasiado. Inténtalo de nuevo.' }, 504);
     }
     if (e instanceof Anthropic.RateLimitError) {
@@ -158,5 +169,7 @@ export async function POST(request: Request) {
       return fail({ error: 'sin_indice', message: 'La base de conocimientos del reglamento no está disponible.' }, 503);
     }
     return fail({ error: 'interno', message: 'Error interno.' }, 500);
+  } finally {
+    if (onBudget) budget.removeEventListener('abort', onBudget);
   }
 }

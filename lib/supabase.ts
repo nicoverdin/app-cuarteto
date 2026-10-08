@@ -11,9 +11,24 @@ export const supabase: SupabaseClient | null = url.startsWith('http')
   ? createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
   : null;
 
-/** Señal que aborta tras `ms` (10 s por defecto); undefined si el navegador no soporta AbortSignal.timeout. */
-export const timeoutSignal = (ms = 10000): AbortSignal | undefined =>
-  typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(ms) : undefined;
+/**
+ * Señal que aborta tras `ms` (10 s por defecto). Sin AbortSignal.timeout (Safari <16, Chrome <103) usa
+ * AbortController + setTimeout; ese temporizador no se puede cancelar desde fuera (vence aunque la petición
+ * ya haya terminado, sin efecto), salvo que la señal se aborte antes.
+ */
+export const timeoutSignal = (ms = 10000): AbortSignal | undefined => {
+  if (typeof AbortSignal === 'undefined') return undefined;
+  if (typeof AbortSignal.timeout === 'function') return AbortSignal.timeout(ms);
+  if (typeof AbortController === 'undefined') return undefined;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => {
+    const err = new Error('The operation timed out.');
+    err.name = 'TimeoutError';
+    ctrl.abort(err);
+  }, ms);
+  ctrl.signal.addEventListener('abort', () => clearTimeout(timer), { once: true });
+  return ctrl.signal;
+};
 
 export interface RoutineRow {
   data: RoutinePart[];

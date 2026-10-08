@@ -242,3 +242,35 @@ test('cola: cambio de sesión descarta lo pendiente (ni pantalla ni confirmado n
   await edit(row('A', 4), ok, 's1');
   assert.deepEqual(st.screen, [row('A', 9)]);
 });
+
+test('cola: si el handler de éxito lanza, la cadena sigue y la siguiente escritura se ejecuta', async () => {
+  const errs: unknown[] = [];
+  const mutate = createWriteQueue<Row>({
+    getSession: () => 's1',
+    getConfirmed: () => [],
+    setConfirmed: () => { throw new Error('boom'); },
+    applyLocal: () => {},
+    onError: e => { errs.push(e); },
+  });
+  const ran: number[] = [];
+  const p1 = mutate('s1', 'line', ['A'], l => l, async () => { ran.push(1); }, l => l);
+  const p2 = mutate('s1', 'line', ['A'], l => l, async () => { ran.push(2); }, l => l);
+  await Promise.all([p1, p2]);
+  assert.deepEqual(ran, [1, 2]);
+  assert.equal(errs.length, 2);
+  assert.equal(mutate.pending(), 0);
+});
+
+test('cola: pending e idle reflejan las escrituras en curso', async () => {
+  const seen: number[] = [];
+  const mutate = createWriteQueue<Row>({
+    getSession: () => 's1', getConfirmed: () => [], setConfirmed: () => {}, applyLocal: () => {}, onError: () => {},
+    onPending: n => { seen.push(n); },
+  });
+  const p = mutate('s1', 'line', ['A'], l => l, ko, l => l);
+  assert.equal(mutate.pending(), 1);
+  await mutate.idle();
+  await p;
+  assert.equal(mutate.pending(), 0);
+  assert.deepEqual(seen, [1, 0]);
+});

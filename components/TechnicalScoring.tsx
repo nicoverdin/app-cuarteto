@@ -8,7 +8,7 @@ import { CATALOG, CATALOG_SOURCE, QOE_VALUES, TechElement } from '../lib/technic
 import { ElementValue, Score, summarize, validateScore } from '../lib/technical/score';
 import { createWriteQueue } from '../lib/technical/queue';
 import {
-  TechSession, createSession, deleteRows, deleteScores, deleteSession, isMissingColumn, isMissingTable, listSessions, loadScores, saveScore,
+  TechSession, createSession, deleteRows, deleteScores, deleteSession, isMissingColumn, isMissingTable, isTimeoutError, listSessions, loadScores, saveScore,
   updateSessionElements,
 } from '../lib/technical/store';
 
@@ -93,6 +93,8 @@ export default function TechnicalScoring() {
   const [listError, setListError] = useState(false);
   const [listKey, setListKey] = useState(0);
   const [cleaning, setCleaning] = useState(false);
+  // Escrituras en cola o en vuelo: mientras haya, no se recarga (la lectura podría ser anterior a ellas).
+  const [pendingWrites, setPendingWrites] = useState(0);
   const [loading, setLoading] = useState(!!supabase);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -129,13 +131,21 @@ export default function TechnicalScoring() {
 
   // Cola de escrituras optimistas por fila (lib/technical/queue.ts).
   const queueRef = useRef<ReturnType<typeof createWriteQueue<Score>> | null>(null);
-  const mutate: ReturnType<typeof createWriteQueue<Score>> = (...args) => {
+  const mutate = (...args: Parameters<ReturnType<typeof createWriteQueue<Score>>>) => {
     queueRef.current ??= createWriteQueue<Score>({
       getSession: () => sessionRef.current,
       getConfirmed: () => confirmedRef.current,
       setConfirmed: list => { confirmedRef.current = list; },
       applyLocal: fn => { setSaveError(null); setScores(fn); },
-      onError: e => fail(e, 'save'),
+      onError: e => {
+        if (isTimeoutError(e)) {
+          // El servidor pudo haber confirmado: avisa y reconcilia recargando cuando la cola se vacíe.
+          setSaveError('No se pudo confirmar el guardado. Se comprobará el estado real.');
+          const sid = sessionRef.current;
+          queueRef.current?.idle().then(() => { if (sessionRef.current === sid) setReloadKey(k => k + 1); });
+        } else fail(e, 'save');
+      },
+      onPending: setPendingWrites,
     });
     return queueRef.current(...args);
   };
@@ -161,9 +171,12 @@ export default function TechnicalScoring() {
   useEffect(() => {
     if (!supabase || !sessionId) return;
     let alive = true;
-    loadScores(supabase, sessionId)
-      .then(({ scores: rows, invalid: bad }) => {
-        if (!alive) return;
+    // Espera a que se vacíe la cola: una lectura anterior a una escritura pendiente reiniciaría el estado con datos viejos.
+    (queueRef.current?.idle() ?? Promise.resolve())
+      .then(() => (alive ? loadScores(supabase!, sessionId) : null))
+      .then(res => {
+        if (!alive || !res) return;
+        const { scores: rows, invalid: bad } = res;
         confirmedRef.current = rows;
         setScores(rows);
         setInvalid(bad);
@@ -276,7 +289,7 @@ export default function TechnicalScoring() {
   // Borra las filas no válidas de la sesión (con confirmación) y recarga.
   const cleanInvalid = async () => {
     const sid = sessionRef.current;
-    if (!supabase || !sid || !ready || cleaning || invalid.length === 0) return;
+    if (!supabase || !sid || !ready || cleaning || pendingWrites > 0 || invalid.length === 0) return;
     if (!window.confirm(`¿Borrar ${invalid.length === 1 ? '1 fila no válida' : `${invalid.length} filas no válidas`} de esta sesión?`)) return;
     setCleaning(true);
     setSaveError(null);
@@ -284,7 +297,10 @@ export default function TechnicalScoring() {
       await deleteRows(supabase, sid, invalid);
       if (sessionRef.current === sid) setReloadKey(k => k + 1);
     } catch (e) {
-      if (sessionRef.current === sid) fail(e, 'save');
+      if (sessionRef.current === sid) {
+        fail(e, 'save');
+        setReloadKey(k => k + 1); // el borrado pudo quedar a medias: recarga para no dejar lista ni contador obsoletos
+      }
     } finally {
       setCleaning(false);
     }
@@ -353,7 +369,12 @@ export default function TechnicalScoring() {
         <p role="alert" className="mt-4 rounded-2xl border border-danger/40 bg-surface px-4 py-3 text-sm font-medium text-danger">
           {loadError}{' '}
           {sessionId && (
-            <button type="button" onClick={() => { setLoadError(null); setReloadKey(k => k + 1); }} className="underline">
+            <button
+              type="button"
+              disabled={pendingWrites > 0}
+              onClick={() => { setLoadError(null); setReloadKey(k => k + 1); }}
+              className="underline disabled:opacity-50"
+            >
               Reintentar
             </button>
           )}
@@ -367,7 +388,7 @@ export default function TechnicalScoring() {
               type="button"
               onClick={() => setSaveError(null)}
               aria-label="Cerrar aviso"
-              className="-m-2 shrink-0 rounded-md p-2 focus-visible:outline-2 focus-visible:outline-danger"
+              className="-my-2 -mr-3 inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md focus-visible:outline-2 focus-visible:outline-danger"
             >
               <X className="w-4 h-4" aria-hidden="true" />
             </button>
@@ -385,7 +406,7 @@ export default function TechnicalScoring() {
       {isAdmin && invalid.length > 0 && (
         <p role="status" className="mt-4 text-xs text-ink-muted">
           {invalid.length === 1 ? 'Se ignoró 1 fila' : `Se ignoraron ${invalid.length} filas`} de esta sesión con datos no válidos.{' '}
-          <button type="button" onClick={cleanInvalid} disabled={cleaning || !ready} className="font-semibold text-danger underline disabled:opacity-50">
+          <button type="button" onClick={cleanInvalid} disabled={cleaning || !ready || pendingWrites > 0} className="font-semibold text-danger underline disabled:opacity-50">
             Limpiar filas no válidas
           </button>
         </p>

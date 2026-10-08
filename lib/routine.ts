@@ -159,7 +159,9 @@ export function rebuildFromConfirmed(confirmed: RoutinePart[], pending: Mutation
  * y offset corto ("2026-10-08 10:34:30+00"). NaN si no se puede interpretar.
  */
 export function parseServerDate(s: string): number {
-  const norm = s.trim().replace(/^(\d{4}-\d{2}-\d{2}) /, '$1T').replace(/([+-]\d{2})$/, '$1:00');
+  const t = s.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return Date.parse(`${t}T00:00:00Z`); // solo día: UTC medianoche
+  const norm = t.replace(/^(\d{4}-\d{2}-\d{2}) /, '$1T').replace(/(T[\d:.]+)([+-]\d{2})$/, '$1$2:00');
   return Date.parse(norm);
 }
 
@@ -168,4 +170,11 @@ export function isOlderOrEqual(a: string, b: string): boolean {
   const x = parseServerDate(a);
   const y = parseServerDate(b);
   return !Number.isNaN(x) && !Number.isNaN(y) && x <= y;
+}
+
+/** ¿El error es un timeout/abort (la escritura pudo llegar al servidor aunque no hayamos visto la respuesta)? */
+export function isAbortError(e: unknown): boolean {
+  const o = e as { name?: unknown; message?: unknown } | null;
+  if (o?.name === 'AbortError' || o?.name === 'TimeoutError') return true;
+  return typeof o?.message === 'string' && /abort|timed? ?out|timeout/i.test(o.message);
 }
