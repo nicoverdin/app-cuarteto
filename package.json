@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test:rag": "tsx --test scripts/test-rag.ts",
+    "test:technical": "tsx --test scripts/test-technical.ts",
     "reglamento:index": "node scripts/build-regulation-index.mjs"
   },
   "dependencies": {
